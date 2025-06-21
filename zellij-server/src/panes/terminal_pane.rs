@@ -63,6 +63,10 @@ enum AnsiEncoding {
     End,
 }
 
+fn is_apc_command(bytes: &VteBytes) -> bool {
+    bytes.starts_with(&[27, 95])
+}
+
 impl AnsiEncoding {
     /// Returns the ANSI representation of the entries.
     /// NOTE: There is an ANSI escape code (27) at the beginning of the string,
@@ -190,6 +194,11 @@ impl Pane for TerminalPane {
     }
     fn handle_pty_bytes(&mut self, bytes: VteBytes) {
         self.set_should_render(true);
+
+        if is_apc_command(&bytes) {
+            self.grid.pass_through_bytes = bytes.clone();
+        }
+
         for &byte in &bytes {
             self.vte_parser.advance(&mut self.grid, byte);
         }

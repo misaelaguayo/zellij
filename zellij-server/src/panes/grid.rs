@@ -329,6 +329,7 @@ pub struct Grid {
     title_stack: Vec<String>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     sixel_grid: SixelGrid,
+    pub pass_through_bytes: Vec<u8>,
     pub changed_colors: Option<[Option<AnsiCode>; 256]>,
     pub should_render: bool,
     pub lock_renders: bool,
@@ -540,6 +541,7 @@ impl Grid {
             character_cell_size,
             search_results: Default::default(),
             sixel_grid,
+            pass_through_bytes: vec![],
             pending_clipboard_update: None,
             ui_component_bytes: None,
             style,
@@ -1185,6 +1187,12 @@ impl Grid {
             raw_vte_output.push(ring_bell);
             self.ring_bell = false;
         }
+
+        if !self.pass_through_bytes.is_empty() {
+            raw_vte_output.push_str(&String::from_utf8_lossy(&self.pass_through_bytes));
+            self.pass_through_bytes.clear();
+        }
+
         return Ok(Some((
             character_chunks,
             Some(raw_vte_output),
