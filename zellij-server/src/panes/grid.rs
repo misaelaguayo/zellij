@@ -29,7 +29,7 @@ pub const MAX_TITLE_STACK_SIZE: usize = 1000;
 use vte::{Params, Perform};
 use zellij_utils::{consts::VERSION, shared::version_number};
 
-use crate::output::{CharacterChunk, OutputBuffer, SixelImageChunk};
+use crate::{output::{CharacterChunk, OutputBuffer, SixelImageChunk}, pty::VteBytes};
 use crate::panes::alacritty_functions::{parse_number, xparse_color};
 use crate::panes::link_handler::LinkHandler;
 use crate::panes::search::SearchResult;
@@ -2430,6 +2430,27 @@ impl Grid {
     }
     pub fn update_arrow_fonts(&mut self, should_support_arrow_fonts: bool) {
         self.arrow_fonts = should_support_arrow_fonts;
+    }
+    pub fn handle_apc_bytes(&mut self, bytes: &VteBytes) {
+        let apc_start: Vec<u8> = vec![27, 95];
+        const ESC: u8 = 0x1b;
+        const BEL: u8 = 0x07;
+
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i..].starts_with(&apc_start) {
+                let mut j = i + apc_start.len();
+                while j < bytes.len() && bytes[j] != BEL && bytes[j] != ESC {
+                    j += 1;
+                }
+
+                let apc_bytes = &bytes[i..j + 1];
+                self.pass_through_bytes.extend_from_slice(apc_bytes);
+                i = j + 1; // move past the end of the APC sequence
+            } else {
+                i += 1; // move to the next byte
+            }
+        }
     }
 }
 

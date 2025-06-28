@@ -3900,3 +3900,51 @@ fn cannot_escape_scroll_region() {
     }
     assert_snapshot!(format!("{:?}", grid));
 }
+
+#[test]
+fn handles_apc_bytes() {
+    let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
+    let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
+    let debug = false;
+    let arrow_fonts = true;
+    let styled_underlines = true;
+    let explicitly_disable_kitty_keyboard_protocol = false;
+    let mut grid = Grid::new(
+        41,
+        120,
+        Rc::new(RefCell::new(Palette::default())),
+        terminal_emulator_color_codes,
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(None)),
+        sixel_image_store,
+        Style::default(),
+        debug,
+        arrow_fonts,
+        styled_underlines,
+        explicitly_disable_kitty_keyboard_protocol,
+    );
+
+    let apc_command_terminated_by_esc = vec![27, 95, 13, 43, 10, 27];
+    let apc_command_terminated_by_bell = vec![27, 95, 13, 43, 10, 7];
+
+    let random_bytes = vec![
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    ];
+
+    let input: Vec<u8> = apc_command_terminated_by_esc
+        .iter()
+        .chain(apc_command_terminated_by_bell.iter())
+        .chain(random_bytes.iter())
+        .cloned()
+        .collect();
+
+    grid.handle_apc_bytes(&input);
+
+    assert_eq!(
+        grid.pass_through_bytes,
+        vec![
+            27, 95, 13, 43, 10, 27, // the first APC command
+            27, 95, 13, 43, 10, 7, // the second APC command
+        ]
+    );
+}
