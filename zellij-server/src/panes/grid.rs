@@ -29,7 +29,6 @@ pub const MAX_TITLE_STACK_SIZE: usize = 1000;
 use vte::{Params, Perform};
 use zellij_utils::{consts::VERSION, shared::version_number};
 
-use crate::{output::{CharacterChunk, OutputBuffer, SixelImageChunk}, pty::VteBytes};
 use crate::panes::alacritty_functions::{parse_number, xparse_color};
 use crate::panes::link_handler::LinkHandler;
 use crate::panes::search::SearchResult;
@@ -39,6 +38,10 @@ use crate::panes::terminal_character::{
     TerminalCharacter, EMPTY_TERMINAL_CHARACTER,
 };
 use crate::ui::components::UiComponentParser;
+use crate::{
+    output::{CharacterChunk, OutputBuffer, SixelImageChunk},
+    pty::VteBytes,
+};
 
 fn get_top_non_canonical_rows(rows: &mut Vec<Row>) -> Vec<Row> {
     let mut index_of_last_non_canonical_row = None;
@@ -330,6 +333,7 @@ pub struct Grid {
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     sixel_grid: SixelGrid,
     pub pass_through_bytes: Vec<u8>,
+    pass_through_mode: bool,
     pub changed_colors: Option<[Option<AnsiCode>; 256]>,
     pub should_render: bool,
     pub lock_renders: bool,
@@ -541,6 +545,7 @@ impl Grid {
             character_cell_size,
             search_results: Default::default(),
             sixel_grid,
+            pass_through_mode: false,
             pass_through_bytes: vec![],
             pending_clipboard_update: None,
             ui_component_bytes: None,
@@ -2437,19 +2442,21 @@ impl Grid {
         const BEL: u8 = 0x07;
 
         let mut i = 0;
+
         while i < bytes.len() {
             if bytes[i..].starts_with(&apc_start) {
-                let mut j = i + apc_start.len();
-                while j < bytes.len() && bytes[j] != BEL && bytes[j] != ESC {
-                    j += 1;
-                }
-
-                let apc_bytes = &bytes[i..j + 1];
-                self.pass_through_bytes.extend_from_slice(apc_bytes);
-                i = j + 1; // move past the end of the APC sequence
-            } else {
-                i += 1; // move to the next byte
+                self.pass_through_mode = true;
+                self.pass_through_bytes.extend_from_slice(&bytes[i..i + 2]);
             }
+
+            if self.pass_through_mode {
+                self.pass_through_bytes.push(bytes[i]);
+                if bytes[i] == ESC || bytes[i] == BEL {
+                    self.pass_through_mode = false;
+                }
+            }
+
+            i += 1;
         }
     }
 }
