@@ -3931,20 +3931,28 @@ fn handles_apc_bytes() {
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ];
 
-    let input: Vec<u8> = apc_command_terminated_by_esc
+    let full_input: Vec<u8> = apc_command_terminated_by_esc
         .iter()
         .chain(apc_command_terminated_by_bell.iter())
         .chain(random_bytes.iter())
         .cloned()
         .collect();
 
-    grid.handle_apc_bytes(&input);
+    grid.handle_apc_bytes(&full_input);
+
+    let partial_apc_command = vec![27, 95, 13, 43, 10];
+    let partial_apc_command_terminated_by_esc = vec![2,3,1,2, 27];
+
+    grid.handle_apc_bytes(&partial_apc_command);
+    grid.handle_apc_bytes(&partial_apc_command_terminated_by_esc);
 
     assert_eq!(
         grid.pass_through_bytes,
         vec![
             27, 95, 13, 43, 10, 27, // the first APC command
             27, 95, 13, 43, 10, 7, // the second APC command
+            27, 95, 13, 43, 10, // the partial APC command
+            2, 3, 1, 2, 27, // the partial APC command terminated by ESC
         ]
     );
 }

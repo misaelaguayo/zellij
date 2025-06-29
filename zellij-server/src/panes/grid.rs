@@ -2447,16 +2447,17 @@ impl Grid {
             if bytes[i..].starts_with(&apc_start) {
                 self.pass_through_mode = true;
                 self.pass_through_bytes.extend_from_slice(&bytes[i..i + 2]);
-            }
-
-            if self.pass_through_mode {
-                self.pass_through_bytes.push(bytes[i]);
-                if bytes[i] == ESC || bytes[i] == BEL {
-                    self.pass_through_mode = false;
+                i += 2;
+            } else {
+                if self.pass_through_mode {
+                    self.pass_through_bytes.push(bytes[i]);
+                    if bytes[i] == ESC || bytes[i] == BEL {
+                        self.pass_through_mode = false;
+                    }
                 }
-            }
 
-            i += 1;
+                i += 1;
+            }
         }
     }
 }
