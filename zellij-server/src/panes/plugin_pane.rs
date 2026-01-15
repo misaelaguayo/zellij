@@ -1,9 +1,10 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
 
-use crate::output::{CharacterChunk, SixelImageChunk};
+use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::{
     grid::Grid,
+    kitty_graphics::KittyImageStore,
     sixel::SixelImageStore,
     terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END},
     LinkHandler, PaneId,
@@ -19,6 +20,7 @@ use crate::ClientId;
 use std::cell::RefCell;
 use std::rc::Rc;
 use vte;
+use zellij_utils::data::PaneContents;
 use zellij_utils::data::{
     BareKey, KeyWithModifier, PermissionStatus, PermissionType, PluginPermission,
 };
@@ -58,6 +60,7 @@ macro_rules! get_or_create_grid {
                 $self.link_handler.clone(),
                 $self.character_cell_size.clone(),
                 $self.sixel_image_store.clone(),
+                $self.kitty_image_store.clone(),
                 $self.style.clone(),
                 $self.debug,
                 $self.arrow_fonts,
@@ -83,12 +86,14 @@ pub(crate) struct PluginPane {
     pub pane_name: String,
     pub style: Style,
     sixel_image_store: Rc<RefCell<SixelImageStore>>,
+    kitty_image_store: Rc<RefCell<KittyImageStore>>,
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
     link_handler: Rc<RefCell<LinkHandler>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     vte_parsers: HashMap<ClientId, vte::Parser>,
     grids: HashMap<ClientId, Grid>,
+    cursor_visibility: HashMap<ClientId, Option<(usize, usize)>>,
     prev_pane_name: String,
     frame: HashMap<ClientId, PaneFrame>,
     borderless: bool,
@@ -102,6 +107,7 @@ pub(crate) struct PluginPane {
     styled_underlines: bool,
     should_be_suppressed: bool,
     text_being_pasted: Option<Vec<u8>>,
+    supports_mouse_selection: bool,
 }
 
 impl PluginPane {
@@ -112,6 +118,7 @@ impl PluginPane {
         title: String,
         pane_name: String,
         sixel_image_store: Rc<RefCell<SixelImageStore>>,
+        kitty_image_store: Rc<RefCell<KittyImageStore>>,
         terminal_emulator_colors: Rc<RefCell<Palette>>,
         terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
         link_handler: Rc<RefCell<LinkHandler>>,
@@ -145,8 +152,10 @@ impl PluginPane {
             link_handler,
             character_cell_size,
             sixel_image_store,
+            kitty_image_store,
             vte_parsers: HashMap::new(),
             grids: HashMap::new(),
+            cursor_visibility: HashMap::new(),
             style,
             pane_frame_color_override: None,
             invoked_with,
@@ -157,6 +166,7 @@ impl PluginPane {
             styled_underlines,
             should_be_suppressed: false,
             text_being_pasted: None,
+            supports_mouse_selection: false,
         };
         for client_id in currently_connected_clients {
             plugin.handle_plugin_bytes(client_id, initial_loading_message.as_bytes().to_vec());
@@ -245,8 +255,25 @@ impl Pane for PluginPane {
 
         self.should_render.insert(client_id, true);
     }
-    fn cursor_coordinates(&self) -> Option<(usize, usize)> {
-        None
+    fn cursor_coordinates(&self, client_id: Option<ClientId>) -> Option<(usize, usize)> {
+        let own_content_columns = self.get_content_columns();
+        let own_content_rows = self.get_content_rows();
+        let Offset { top, left, .. } = self.content_offset;
+        if let Some(coordinates) =
+            client_id.and_then(|client_id| self.cursor_visibility.get(&client_id))
+        {
+            coordinates
+                .map(|(x, y)| (x + left, y + top))
+                .and_then(|(x, y)| {
+                    if x >= own_content_columns || y >= own_content_rows {
+                        None
+                    } else {
+                        Some((x, y)) // these are 0 indexed
+                    }
+                })
+        } else {
+            None
+        }
     }
     fn adjust_input_to_terminal(
         &mut self,
@@ -255,7 +282,14 @@ impl Pane for PluginPane {
         _raw_input_bytes_are_kitty: bool,
         client_id: Option<ClientId>,
     ) -> Option<AdjustedInput> {
-        if let Some(requesting_permissions) = &self.requesting_permissions {
+        if client_id
+            .and_then(|c| self.grids.get(&c))
+            .map(|g| g.has_selection())
+            .unwrap_or(false)
+        {
+            self.reset_selection(client_id);
+            None
+        } else if let Some(requesting_permissions) = &self.requesting_permissions {
             let permissions = requesting_permissions.permissions.clone();
             if let Some(key_with_modifier) = key_with_modifier {
                 match key_with_modifier.bare_key {
@@ -350,13 +384,19 @@ impl Pane for PluginPane {
     fn set_selectable(&mut self, selectable: bool) {
         self.selectable = selectable;
     }
+    fn show_cursor(&mut self, client_id: ClientId, cursor_position: Option<(usize, usize)>) {
+        self.cursor_visibility.insert(client_id, cursor_position);
+        self.should_render.insert(client_id, true);
+    }
     fn request_permissions_from_user(&mut self, permissions: Option<PluginPermission>) {
         self.requesting_permissions = permissions;
+        self.handle_plugin_bytes_for_all_clients(Default::default()); // to trigger the render of
+                                                                      // the permission message
     }
     fn render(
         &mut self,
         client_id: Option<ClientId>,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>)>> {
+    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>, Vec<KittyImageChunk>)>> {
         if client_id.is_none() {
             return Ok(None);
         }
@@ -391,56 +431,44 @@ impl Pane for PluginPane {
         if self.borderless {
             return Ok(None);
         }
-        if let Some(grid) = self.grids.get(&client_id) {
-            let err_context = || format!("failed to render frame for client {client_id}");
-            let pane_title = if let Some(text_color_override) = self
-                .pane_frame_color_override
-                .as_ref()
-                .and_then(|(_color, text)| text.as_ref())
-            {
-                text_color_override.into()
-            } else if self.pane_name.is_empty()
-                && input_mode == InputMode::RenamePane
-                && frame_params.is_main_client
-            {
-                String::from("Enter name...")
-            } else if self.pane_name.is_empty() {
-                grid.title
-                    .clone()
-                    .unwrap_or_else(|| self.pane_title.clone())
-            } else {
-                self.pane_name.clone()
-            };
+        let frame_geom = self.current_geom();
+        let grid = get_or_create_grid!(self, client_id);
+        let err_context = || format!("failed to render frame for client {client_id}");
+        let pane_title = if let Some(text_color_override) = self
+            .pane_frame_color_override
+            .as_ref()
+            .and_then(|(_color, text)| text.as_ref())
+        {
+            text_color_override.into()
+        } else if self.pane_name.is_empty()
+            && input_mode == InputMode::RenamePane
+            && frame_params.is_main_client
+        {
+            String::from("Enter name...")
+        } else if self.pane_name.is_empty() {
+            grid.title
+                .clone()
+                .unwrap_or_else(|| self.pane_title.clone())
+        } else {
+            self.pane_name.clone()
+        };
 
-            let frame_geom = self.current_geom();
-            let is_pinned = frame_geom.is_pinned;
-            let mut frame = PaneFrame::new(
-                frame_geom.into(),
-                grid.scrollback_position_and_length(),
-                pane_title,
-                frame_params,
-            )
-            .is_pinned(is_pinned);
-            if let Some((frame_color_override, _text)) = self.pane_frame_color_override.as_ref() {
-                frame.override_color(*frame_color_override);
-            }
+        let is_pinned = frame_geom.is_pinned;
+        let mut frame = PaneFrame::new(
+            frame_geom.into(),
+            grid.scrollback_position_and_length(),
+            pane_title,
+            frame_params,
+        )
+        .is_pinned(is_pinned);
+        if let Some((frame_color_override, _text)) = self.pane_frame_color_override.as_ref() {
+            frame.override_color(*frame_color_override);
+        }
 
-            let res = match self.frame.get(&client_id) {
-                // TODO: use and_then or something?
-                Some(last_frame) => {
-                    if &frame != last_frame {
-                        if !self.borderless {
-                            let frame_output = frame.render().with_context(err_context)?;
-                            self.frame.insert(client_id, frame);
-                            Some(frame_output)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                },
-                None => {
+        let res = match self.frame.get(&client_id) {
+            // TODO: use and_then or something?
+            Some(last_frame) => {
+                if &frame != last_frame || is_pinned {
                     if !self.borderless {
                         let frame_output = frame.render().with_context(err_context)?;
                         self.frame.insert(client_id, frame);
@@ -448,12 +476,21 @@ impl Pane for PluginPane {
                     } else {
                         None
                     }
-                },
-            };
-            Ok(res)
-        } else {
-            Ok(None)
-        }
+                } else {
+                    None
+                }
+            },
+            None => {
+                if !self.borderless {
+                    let frame_output = frame.render().with_context(err_context)?;
+                    self.frame.insert(client_id, frame);
+                    Some(frame_output)
+                } else {
+                    None
+                }
+            },
+        };
+        Ok(res)
     }
     fn render_fake_cursor(
         &mut self,
@@ -537,6 +574,12 @@ impl Pane for PluginPane {
         self.resize_grids();
         self.set_should_render(true);
     }
+    fn dump_screen(&self, full: bool, client_id: Option<ClientId>) -> String {
+        client_id
+            .and_then(|c| self.grids.get(&c))
+            .map(|g| g.dump_screen(full))
+            .unwrap_or_else(|| "".to_owned())
+    }
     fn scroll_up(&mut self, count: usize, client_id: ClientId) {
         self.send_plugin_instructions
             .send(PluginInstruction::Update(vec![(
@@ -562,31 +605,68 @@ impl Pane for PluginPane {
         // noop
     }
     fn start_selection(&mut self, start: &Position, client_id: ClientId) {
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                Some(client_id),
-                Event::Mouse(Mouse::LeftClick(start.line.0, start.column.0)),
-            )]))
-            .unwrap();
+        if self.supports_mouse_selection {
+            if let Some(grid) = self.grids.get_mut(&client_id) {
+                grid.start_selection(start);
+                self.set_should_render(true);
+            }
+        } else {
+            self.send_plugin_instructions
+                .send(PluginInstruction::Update(vec![(
+                    Some(self.pid),
+                    Some(client_id),
+                    Event::Mouse(Mouse::LeftClick(start.line.0, start.column.0)),
+                )]))
+                .unwrap();
+        }
     }
     fn update_selection(&mut self, position: &Position, client_id: ClientId) {
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                Some(client_id),
-                Event::Mouse(Mouse::Hold(position.line.0, position.column.0)),
-            )]))
-            .unwrap();
+        if self.supports_mouse_selection {
+            if let Some(grid) = self.grids.get_mut(&client_id) {
+                grid.update_selection(position);
+                self.set_should_render(true); // TODO: no??
+            }
+        } else {
+            self.send_plugin_instructions
+                .send(PluginInstruction::Update(vec![(
+                    Some(self.pid),
+                    Some(client_id),
+                    Event::Mouse(Mouse::Hold(position.line.0, position.column.0)),
+                )]))
+                .unwrap();
+        }
     }
     fn end_selection(&mut self, end: &Position, client_id: ClientId) {
-        self.send_plugin_instructions
-            .send(PluginInstruction::Update(vec![(
-                Some(self.pid),
-                Some(client_id),
-                Event::Mouse(Mouse::Release(end.line(), end.column())),
-            )]))
-            .unwrap();
+        if self.supports_mouse_selection {
+            if let Some(grid) = self.grids.get_mut(&client_id) {
+                grid.end_selection(end);
+            }
+        } else {
+            self.send_plugin_instructions
+                .send(PluginInstruction::Update(vec![(
+                    Some(self.pid),
+                    Some(client_id),
+                    Event::Mouse(Mouse::Release(end.line(), end.column())),
+                )]))
+                .unwrap();
+        }
+    }
+    fn reset_selection(&mut self, client_id: Option<ClientId>) {
+        if let Some(grid) = client_id.and_then(|c| self.grids.get_mut(&c)) {
+            grid.reset_selection();
+            self.set_should_render(true);
+        }
+    }
+    fn supports_mouse_selection(&self) -> bool {
+        self.supports_mouse_selection
+    }
+
+    fn get_selected_text(&self, client_id: ClientId) -> Option<String> {
+        if let Some(grid) = self.grids.get(&client_id) {
+            grid.get_selected_text()
+        } else {
+            None
+        }
     }
     fn is_scrolled(&self) -> bool {
         false
@@ -789,6 +869,25 @@ impl Pane for PluginPane {
             _ => {},
         }
         None
+    }
+    fn set_mouse_selection_support(&mut self, selection_support: bool) {
+        self.supports_mouse_selection = selection_support;
+        if !selection_support {
+            let client_ids_with_grids: Vec<ClientId> = self.grids.keys().copied().collect();
+            for client_id in client_ids_with_grids {
+                self.reset_selection(Some(client_id));
+            }
+        }
+    }
+    fn pane_contents(
+        &self,
+        client_id: Option<ClientId>,
+        get_full_scrollback: bool,
+    ) -> PaneContents {
+        client_id
+            .and_then(|c| self.grids.get(&c))
+            .map(|g| g.pane_contents(get_full_scrollback))
+            .unwrap_or_else(Default::default)
     }
 }
 

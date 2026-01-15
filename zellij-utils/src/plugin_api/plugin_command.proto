@@ -140,13 +140,42 @@ enum CommandName {
   OpenFileNearPlugin = 124;
   OpenFileFloatingNearPlugin = 125;
   OpenFileInPlaceOfPlugin = 126;
-  GroupAndUngroupPanes = 127;
-  HighlightAndUnhighlightPanes = 128;
-  CloseMultiplePanes = 129;
-  FloatMultiplePanes = 130;
-  EmbedMultiplePanes = 131;
-  InterceptKeyPresses = 132;
-  ClearKeyPressesIntercepts = 133;
+  StartWebServer = 127;
+  GroupAndUngroupPanes = 128;
+  HighlightAndUnhighlightPanes = 129;
+  CloseMultiplePanes = 130;
+  FloatMultiplePanes = 131;
+  EmbedMultiplePanes = 132;
+  ShareCurrentSession = 133;
+  StopSharingCurrentSession = 134;
+  StopWebServer = 135;
+  QueryWebServerStatus = 136;
+  SetSelfMouseSelectionSupport = 137;
+  GenerateWebLoginToken = 138;
+  RevokeWebLoginToken = 139;
+  ListWebLoginTokens = 140;
+  RevokeAllWebLoginTokens = 141;
+  RenameWebLoginToken = 142;
+  InterceptKeyPresses = 143;
+  ClearKeyPressesIntercepts = 144;
+  ReplacePaneWithExistingPane = 155;
+  GetPaneScrollback = 163;
+  RunAction = 164;
+  ShowCursor = 169;
+  CopyToClipboard = 170;
+  SendSigintToPaneId = 171;
+  SendSigkillToPaneId = 172;
+  GetPanePid = 173;
+  OverrideLayout = 174;
+  SaveLayout = 175;
+  DeleteLayout = 176;
+  EditLayout = 177;
+  GenerateRandomName = 178;
+  DumpLayout = 179;
+  ParseLayout = 180;
+  RenameLayout = 181;
+  GetLayoutDir = 182;
+  GetFocusedPaneInfo = 183;
 }
 
 message PluginCommand {
@@ -248,7 +277,69 @@ message PluginCommand {
     CloseMultiplePanesPayload close_multiple_panes_payload = 104;
     FloatMultiplePanesPayload float_multiple_panes_payload = 105;
     EmbedMultiplePanesPayload embed_multiple_panes_payload = 106;
+    SetSelfMouseSelectionSupportPayload set_self_mouse_selection_support_payload = 107;
+    GenerateWebLoginTokenPayload generate_web_login_token_payload = 108;
+    RevokeWebLoginTokenPayload revoke_web_login_token_payload = 109;
+    RenameWebLoginTokenPayload rename_web_login_token_payload = 110;
+    ReplacePaneWithExistingPanePayload replace_pane_with_existing_pane_payload = 111;
+    NewTabPayload new_tab_payload = 112;
+    GetPaneScrollbackPayload get_pane_scrollback_payload = 113;
+    RunActionPayload run_action_payload = 114;
+    ShowCursorPayload show_cursor_payload = 119;
+    CopyToClipboardPayload copy_to_clipboard_payload = 120;
+    PaneId send_sigint_to_pane_id_payload = 121;
+    PaneId send_sigkill_to_pane_id_payload = 122;
+    GetPanePidPayload get_pane_pid_payload = 123;
+    OverrideLayoutPayload override_layout_payload = 124;
+    SaveLayoutPayload save_layout_payload = 125;
+    DeleteLayoutPayload delete_layout_payload = 126;
+    EditLayoutPayload edit_layout_payload = 127;
+    GenerateRandomNamePayload generate_random_name_payload = 128;
+    DumpLayoutPayload dump_layout_payload = 129;
+    ParseLayoutPayload parse_layout_payload = 130;
+    RenameLayoutPayload rename_layout_payload = 131;
+    GetLayoutDirPayload get_layout_dir_payload = 132;
+    DumpSessionLayoutPayload dump_session_layout_payload = 133;
+    GetFocusedPaneInfoPayload get_focused_pane_info_payload = 134;
   }
+}
+
+message NewTabPayload {
+  optional string name = 1;
+  optional string cwd = 2;
+}
+
+message DumpSessionLayoutPayload {
+  optional uint32 tab_index = 1;
+}
+
+message RunActionPayload {
+  action.Action action = 1;
+  repeated ContextItem context = 2;
+}
+
+message ReplacePaneWithExistingPanePayload {
+  PaneId pane_id_to_replace = 1;
+  PaneId existing_pane_id = 2;
+  bool suppress_replaced_pane = 3;
+}
+
+message RenameWebLoginTokenPayload {
+  string old_name = 1;
+  string new_name = 2;
+}
+
+message RevokeWebLoginTokenPayload {
+  string token_label = 1;
+}
+
+message GenerateWebLoginTokenPayload {
+  optional string token_label = 1;
+  optional bool read_only = 2;
+}
+
+message SetSelfMouseSelectionSupportPayload {
+  bool support_mouse_selection = 1;
 }
 
 message EmbedMultiplePanesPayload {
@@ -271,6 +362,7 @@ message HighlightAndUnhighlightPanesPayload {
 message GroupAndUngroupPanesPayload {
   repeated PaneId pane_ids_to_group = 1;
   repeated PaneId pane_ids_to_ungroup = 2;
+  bool for_all_clients = 3;
 }
 
 message OpenFileInPlaceOfPluginPayload {
@@ -468,6 +560,7 @@ message HidePaneWithIdPayload {
 message ShowPaneWithIdPayload {
   PaneId pane_id = 1;
   bool should_float_if_hidden = 2;
+  bool should_focus_pane = 3;
 }
 
 message NewTabsWithLayoutInfoPayload {
@@ -500,6 +593,7 @@ message NewPluginArgs {
     optional string pane_title = 3;
     optional string cwd = 4;
     bool skip_cache = 5;
+    optional bool should_focus = 6;
 }
 
 message PaneId {
@@ -627,4 +721,174 @@ message FixedOrPercentValue {
 enum FixedOrPercent {
   Fixed = 0;
   Percent = 1;
+}
+
+message CreateTokenResponse {
+  optional string token = 1;
+  optional string token_label = 2;
+  optional string error = 3;
+}
+
+message RevokeTokenResponse {
+  bool successfully_revoked = 1;
+  optional string error = 2;
+}
+
+message ListTokensResponse {
+  // tokens/creation_times/read_only_flags should be synchronized
+  repeated string tokens = 1;
+  repeated string creation_times = 2;
+  repeated bool read_only_flags = 3;
+  optional string error = 4;
+}
+
+message RevokeAllWebTokensResponse {
+  bool successfully_revoked = 1;
+  optional string error = 2;
+}
+
+message RenameWebTokenResponse {
+  bool successfully_renamed = 1;
+  optional string error = 2;
+}
+
+message GetPaneScrollbackPayload {
+  PaneId pane_id = 1;
+  bool get_full_scrollback = 2;
+}
+
+message ShowCursorPayload {
+  optional CursorPosition position = 1;
+}
+
+message CursorPosition {
+  uint32 x = 1;
+  uint32 y = 2;
+}
+
+message CopyToClipboardPayload {
+  string text = 1;
+}
+
+message GetPanePidPayload {
+  PaneId pane_id = 1;
+}
+
+message GetPanePidResponse {
+  oneof result {
+    int32 pid = 1;
+    string error = 2;
+  }
+}
+
+message SaveLayoutResponse {
+  oneof result {
+    bool success = 1;
+    string error = 2;
+  }
+}
+
+message DeleteLayoutResponse {
+  oneof result {
+    bool success = 1;
+    string error = 2;
+  }
+}
+
+message EditLayoutResponse {
+  oneof result {
+    bool success = 1;
+    string error = 2;
+  }
+}
+
+message GenerateRandomNameResponse {
+  string name = 1;
+}
+
+message OverrideLayoutPayload {
+  event.LayoutInfo layout_info = 1;
+  repeated ContextItem context = 2;
+  bool retain_existing_terminal_panes = 3;
+  bool retain_existing_plugin_panes = 4;
+  bool apply_only_to_active_tab = 5;
+}
+
+message SaveLayoutPayload {
+  string layout_name = 1;
+  string layout_kdl = 2;
+  bool overwrite = 3;
+}
+
+message DeleteLayoutPayload {
+  string layout_name = 1;
+}
+
+message EditLayoutPayload {
+  string layout_name = 1;
+  repeated ContextItem context = 2;
+}
+
+message GenerateRandomNamePayload {}
+
+message DumpLayoutPayload {
+  string layout_name = 1;
+}
+
+message DumpLayoutResponse {
+  oneof result {
+    string layout_content = 1;
+    string error = 2;
+  }
+}
+
+message DumpSessionLayoutResponse {
+  oneof result {
+    string layout_content = 1;
+    string error = 2;
+  }
+  optional api.event.LayoutMetadata metadata = 3;
+}
+
+message ParseLayoutPayload {
+  string layout_string = 1;
+}
+
+message ParseLayoutResponse {
+  oneof result {
+    api.event.LayoutMetadata metadata = 1;
+    api.event.LayoutParsingError error = 2;
+  }
+}
+
+message RenameLayoutPayload {
+  string old_layout_name = 1;
+  string new_layout_name = 2;
+}
+
+message RenameLayoutResponse {
+  oneof result {
+    bool success = 1;
+    string error = 2;
+  }
+}
+
+message GetLayoutDirPayload {}
+
+message GetLayoutDirResponse {
+  string layout_dir = 1;
+}
+
+message GetFocusedPaneInfoPayload {}
+
+message GetFocusedPaneInfoResponse {
+  oneof result {
+    FocusedPaneInfo focused_pane_info = 1;
+    string error = 2;
+  }
+}
+
+message FocusedPaneInfo {
+  uint32 focused_tab_index = 1;
+  PaneId focused_pane_id = 2;
 }

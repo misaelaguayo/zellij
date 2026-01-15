@@ -1,10 +1,12 @@
 //! Handles cli and configuration options
 use crate::cli::Command;
-use crate::data::InputMode;
+use crate::data::{InputMode, WebSharing};
 use clap::{ArgEnum, Args};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
+
+use std::net::IpAddr;
 
 #[derive(Copy, Clone, Debug, PartialEq, Deserialize, Serialize, ArgEnum)]
 pub enum OnForceClose {
@@ -162,6 +164,38 @@ pub struct Options {
     #[serde(default)]
     pub support_kitty_keyboard_protocol: Option<bool>,
 
+    /// Whether to make sure a local web server is running when a new Zellij session starts.
+    /// This web server will allow creating new sessions and attaching to existing ones that have
+    /// opted in to being shared in the browser.
+    ///
+    /// Note: a local web server can still be manually started from within a Zellij session or from the CLI.
+    /// If this is not desired, one can use a version of Zellij compiled without
+    /// web_server_capability
+    ///
+    /// Possible values:
+    /// - true
+    /// - false
+    /// Default: false
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub web_server: Option<bool>,
+
+    /// Whether to allow new sessions to be shared through a local web server, assuming one is
+    /// running (see the `web_server` option for more details).
+    ///
+    /// Note: if Zellij was compiled without web_server_capability, this option will be locked to
+    /// "disabled"
+    ///
+    /// Possible values:
+    /// - "on" (new sessions will allow web sharing through the local web server if it
+    /// is online)
+    /// - "off" (new sessions will not allow web sharing unless they explicitly opt-in to it)
+    /// - "disabled" (new sessions will not allow web sharing and will not be able to opt-in to it)
+    /// Default: "off"
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub web_sharing: Option<WebSharing>,
+
     /// Whether to stack panes when resizing beyond a certain size
     /// default is true
     #[clap(long, value_parser)]
@@ -185,6 +219,18 @@ pub struct Options {
     #[clap(long, value_parser)]
     #[serde(default)]
     pub advanced_mouse_actions: Option<bool>,
+
+    // these are intentionally excluded from the CLI options as they must be specified in the
+    // configuration file
+    pub web_server_ip: Option<IpAddr>,
+    pub web_server_port: Option<u16>,
+    pub web_server_cert: Option<PathBuf>,
+    pub web_server_key: Option<PathBuf>,
+    pub enforce_https_for_localhost: Option<bool>,
+    /// A command to run after the discovery of running commands when serializing, for the purpose
+    /// of manipulating the command (eg. with a regex) before it gets serialized
+    #[clap(long, value_parser)]
+    pub post_command_discovery_hook: Option<String>,
 }
 
 #[derive(ArgEnum, Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
@@ -263,10 +309,24 @@ impl Options {
         let support_kitty_keyboard_protocol = other
             .support_kitty_keyboard_protocol
             .or(self.support_kitty_keyboard_protocol);
+        let web_server = other.web_server.or(self.web_server);
+        let web_sharing = other.web_sharing.or(self.web_sharing);
         let stacked_resize = other.stacked_resize.or(self.stacked_resize);
         let show_startup_tips = other.show_startup_tips.or(self.show_startup_tips);
         let show_release_notes = other.show_release_notes.or(self.show_release_notes);
         let advanced_mouse_actions = other.advanced_mouse_actions.or(self.advanced_mouse_actions);
+        let web_server_ip = other.web_server_ip.or(self.web_server_ip);
+        let web_server_port = other.web_server_port.or(self.web_server_port);
+        let web_server_cert = other
+            .web_server_cert
+            .or_else(|| self.web_server_cert.clone());
+        let web_server_key = other.web_server_key.or_else(|| self.web_server_key.clone());
+        let enforce_https_for_localhost = other
+            .enforce_https_for_localhost
+            .or(self.enforce_https_for_localhost);
+        let post_command_discovery_hook = other
+            .post_command_discovery_hook
+            .or(self.post_command_discovery_hook.clone());
 
         Options {
             simplified_ui,
@@ -296,10 +356,18 @@ impl Options {
             serialization_interval,
             disable_session_metadata,
             support_kitty_keyboard_protocol,
+            web_server,
+            web_sharing,
             stacked_resize,
             show_startup_tips,
             show_release_notes,
             advanced_mouse_actions,
+            web_server_ip,
+            web_server_port,
+            web_server_cert,
+            web_server_key,
+            enforce_https_for_localhost,
+            post_command_discovery_hook,
         }
     }
 
@@ -358,10 +426,24 @@ impl Options {
         let support_kitty_keyboard_protocol = other
             .support_kitty_keyboard_protocol
             .or(self.support_kitty_keyboard_protocol);
+        let web_server = other.web_server.or(self.web_server);
+        let web_sharing = other.web_sharing.or(self.web_sharing);
         let stacked_resize = other.stacked_resize.or(self.stacked_resize);
         let show_startup_tips = other.show_startup_tips.or(self.show_startup_tips);
         let show_release_notes = other.show_release_notes.or(self.show_release_notes);
         let advanced_mouse_actions = other.advanced_mouse_actions.or(self.advanced_mouse_actions);
+        let web_server_ip = other.web_server_ip.or(self.web_server_ip);
+        let web_server_port = other.web_server_port.or(self.web_server_port);
+        let web_server_cert = other
+            .web_server_cert
+            .or_else(|| self.web_server_cert.clone());
+        let web_server_key = other.web_server_key.or_else(|| self.web_server_key.clone());
+        let enforce_https_for_localhost = other
+            .enforce_https_for_localhost
+            .or(self.enforce_https_for_localhost);
+        let post_command_discovery_hook = other
+            .post_command_discovery_hook
+            .or_else(|| self.post_command_discovery_hook.clone());
 
         Options {
             simplified_ui,
@@ -391,10 +473,18 @@ impl Options {
             serialization_interval,
             disable_session_metadata,
             support_kitty_keyboard_protocol,
+            web_server,
+            web_sharing,
             stacked_resize,
             show_startup_tips,
             show_release_notes,
             advanced_mouse_actions,
+            web_server_ip,
+            web_server_port,
+            web_server_cert,
+            web_server_key,
+            enforce_https_for_localhost,
+            post_command_discovery_hook,
         }
     }
 
@@ -403,68 +493,6 @@ impl Options {
             Options::merge_from_cli(self, options.into())
         } else {
             self.to_owned()
-        }
-    }
-}
-
-#[derive(Clone, Default, Debug, PartialEq, Args, Serialize, Deserialize)]
-/// Options that can be set through cli flags
-/// boolean flags end up toggling boolean options in `Options`
-pub struct CliOptions {
-    /// Disable handling of mouse events
-    #[clap(long, conflicts_with("mouse-mode"), value_parser)]
-    pub disable_mouse_mode: bool,
-    /// Disable display of pane frames
-    #[clap(long, conflicts_with("pane-frames"), value_parser)]
-    pub no_pane_frames: bool,
-    #[clap(flatten)]
-    pub options: Options,
-}
-
-impl From<CliOptions> for Options {
-    fn from(cli_options: CliOptions) -> Self {
-        let mut opts = cli_options.options;
-
-        // TODO: what?
-        if cli_options.no_pane_frames {
-            opts.pane_frames = Some(false);
-        }
-        if cli_options.disable_mouse_mode {
-            opts.mouse_mode = Some(false);
-        }
-
-        Self {
-            simplified_ui: opts.simplified_ui,
-            theme: opts.theme,
-            default_mode: opts.default_mode,
-            default_shell: opts.default_shell,
-            default_cwd: opts.default_cwd,
-            default_layout: opts.default_layout,
-            layout_dir: opts.layout_dir,
-            theme_dir: opts.theme_dir,
-            mouse_mode: opts.mouse_mode,
-            pane_frames: opts.pane_frames,
-            mirror_session: opts.mirror_session,
-            on_force_close: opts.on_force_close,
-            scroll_buffer_size: opts.scroll_buffer_size,
-            copy_command: opts.copy_command,
-            copy_clipboard: opts.copy_clipboard,
-            copy_on_select: opts.copy_on_select,
-            scrollback_editor: opts.scrollback_editor,
-            session_name: opts.session_name,
-            attach_to_session: opts.attach_to_session,
-            auto_layout: opts.auto_layout,
-            session_serialization: opts.session_serialization,
-            serialize_pane_viewport: opts.serialize_pane_viewport,
-            scrollback_lines_to_serialize: opts.scrollback_lines_to_serialize,
-            styled_underlines: opts.styled_underlines,
-            serialization_interval: opts.serialization_interval,
-            support_kitty_keyboard_protocol: opts.support_kitty_keyboard_protocol,
-            stacked_resize: opts.stacked_resize,
-            show_startup_tips: opts.show_startup_tips,
-            show_release_notes: opts.show_release_notes,
-            advanced_mouse_actions: opts.advanced_mouse_actions,
-            ..Default::default()
         }
     }
 }

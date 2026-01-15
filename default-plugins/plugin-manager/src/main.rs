@@ -468,6 +468,7 @@ impl NewPluginScreen {
                         .new_plugin_instance_should_have_pane_title(
                             "Select a .wasm file to load as a plugin...",
                         )
+                        .new_plugin_instance_should_be_focused()
                         .with_args(args),
                 );
             },
@@ -909,7 +910,7 @@ impl State {
     }
     pub fn focus_selected(&self) {
         if let Some(selected_plugin_id) = self.selected_plugin_id() {
-            focus_pane_with_id(PaneId::Plugin(selected_plugin_id), true);
+            focus_pane_with_id(PaneId::Plugin(selected_plugin_id), true, false);
         }
     }
     pub fn reload_selected(&self) {

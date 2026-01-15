@@ -1,4 +1,8 @@
 use crate::data::Styling;
+
+#[cfg(not(target_family = "wasm"))]
+use crate::data::{LayoutInfo, LayoutWithError};
+
 use miette::{Diagnostic, LabeledSpan, NamedSource, SourceCode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -14,11 +18,12 @@ use super::layout::RunPluginOrAlias;
 use super::options::Options;
 use super::plugins::{PluginAliases, PluginsConfigError};
 use super::theme::{Themes, UiConfig};
+use super::web_client::WebClientConfig;
 use crate::cli::{CliArgs, Command};
 use crate::envs::EnvironmentVariables;
 use crate::{home, setup};
 
-const DEFAULT_CONFIG_FILE_NAME: &str = "config.kdl";
+pub const DEFAULT_CONFIG_FILE_NAME: &str = "config.kdl";
 
 type ConfigResult = Result<Config, ConfigError>;
 
@@ -32,16 +37,42 @@ pub struct Config {
     pub ui: UiConfig,
     pub env: EnvironmentVariables,
     pub background_plugins: HashSet<RunPluginOrAlias>,
+    pub web_client: WebClientConfig,
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Serialize, Deserialize)]
 pub struct KdlError {
     pub error_message: String,
+    #[serde(skip)]
     pub src: Option<NamedSource>,
     pub offset: Option<usize>,
     pub len: Option<usize>,
     pub help_message: Option<String>,
 }
+
+impl Clone for KdlError {
+    fn clone(&self) -> Self {
+        KdlError {
+            error_message: self.error_message.clone(),
+            src: None, // NamedSource doesn't implement Clone, so we skip it
+            offset: self.offset,
+            len: self.len,
+            help_message: self.help_message.clone(),
+        }
+    }
+}
+
+impl PartialEq for KdlError {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare everything except src (which doesn't implement PartialEq)
+        self.error_message == other.error_message
+            && self.offset == other.offset
+            && self.len == other.len
+            && self.help_message == other.help_message
+    }
+}
+
+impl Eq for KdlError {}
 
 impl KdlError {
     pub fn add_src(mut self, src_name: String, src_input: String) -> Self {
@@ -241,23 +272,29 @@ impl Config {
         opts.config.clone().or_else(|| {
             opts.config_dir
                 .clone()
-                .or_else(home::find_default_config_dir)
+                .or_else(|| {
+                    home::try_create_home_config_dir();
+                    home::find_default_config_dir()
+                })
                 .map(|config_dir| config_dir.join(DEFAULT_CONFIG_FILE_NAME))
         })
     }
-    pub fn write_config_to_disk(config: String, opts: &CliArgs) -> Result<Config, Option<PathBuf>> {
+    pub fn default_config_file_path() -> Option<PathBuf> {
+        home::find_default_config_dir().map(|config_dir| config_dir.join(DEFAULT_CONFIG_FILE_NAME))
+    }
+    pub fn write_config_to_disk(
+        config: String,
+        config_file_path: &PathBuf,
+    ) -> Result<Config, Option<PathBuf>> {
         // if we fail, try to return the PathBuf of the file we were not able to write to
+        let config_file_path = config_file_path.clone();
         Config::from_kdl(&config, None)
             .map_err(|e| {
                 log::error!("Failed to parse config: {}", e);
                 None
             })
             .and_then(|parsed_config| {
-                let backed_up_file_name = Config::backup_current_config(&opts)?;
-                let config_file_path = Config::config_file_path(&opts).ok_or_else(|| {
-                    log::error!("Config file path not found");
-                    None
-                })?;
+                let backed_up_file_name = Config::backup_current_config(&config_file_path)?;
                 let config = match backed_up_file_name {
                     Some(backed_up_file_name) => {
                         format!(
@@ -290,31 +327,28 @@ impl Config {
             })
     }
     // returns true if the config was not previouly written to disk and we successfully wrote it
-    pub fn write_config_to_disk_if_it_does_not_exist(config: String, opts: &CliArgs) -> bool {
-        if opts.config.is_none() {
-            // if a config file path wasn't explicitly specified, we try to create the default
-            // config folder
-            home::try_create_home_config_dir();
-        }
-        match Config::config_file_path(opts) {
-            Some(config_file_path) => {
-                if config_file_path.exists() {
+    pub fn write_config_to_disk_if_it_does_not_exist(
+        config: String,
+        config_file_path: &Option<PathBuf>,
+    ) -> bool {
+        let Some(config_file_path) = config_file_path.clone() else {
+            log::error!("Could not find file path to write config");
+            return false;
+        };
+        if config_file_path.exists() {
+            false
+        } else {
+            if let Err(e) = std::fs::write(&config_file_path, config.as_bytes()) {
+                log::error!("Failed to write config to disk: {}", e);
+                return false;
+            }
+            match std::fs::read_to_string(&config_file_path) {
+                Ok(written_config) => written_config == config,
+                Err(e) => {
+                    log::error!("Failed to read written config: {}", e);
                     false
-                } else {
-                    if let Err(e) = std::fs::write(&config_file_path, config.as_bytes()) {
-                        log::error!("Failed to write config to disk: {}", e);
-                        return false;
-                    }
-                    match std::fs::read_to_string(&config_file_path) {
-                        Ok(written_config) => written_config == config,
-                        Err(e) => {
-                            log::error!("Failed to read written config: {}", e);
-                            false
-                        },
-                    }
-                }
-            },
-            None => false,
+                },
+            }
         }
     }
     fn find_free_backup_file_name(config_file_path: &PathBuf) -> Option<PathBuf> {
@@ -356,47 +390,45 @@ impl Config {
             },
         }
     }
-    fn backup_current_config(opts: &CliArgs) -> Result<Option<PathBuf>, Option<PathBuf>> {
+    fn backup_current_config(
+        config_file_path: &PathBuf,
+    ) -> Result<Option<PathBuf>, Option<PathBuf>> {
         // if we fail, try to return the PathBuf of the file we were not able to write to
-        if let Some(config_file_path) = Config::config_file_path(&opts) {
-            match std::fs::read_to_string(&config_file_path) {
-                Ok(current_config) => {
-                    let Some(backup_config_path) =
-                        Config::find_free_backup_file_name(&config_file_path)
-                    else {
-                        log::error!("Failed to find a file name to back up the configuration to, ran out of files.");
-                        return Err(None);
-                    };
-                    if Config::backup_config_with_written_content_confirmation(
-                        &current_config,
-                        &config_file_path,
-                        &backup_config_path,
-                    ) {
-                        Ok(Some(backup_config_path))
-                    } else {
-                        log::error!(
-                            "Failed to back up config file: {}",
-                            backup_config_path.display()
-                        );
-                        Err(Some(backup_config_path))
-                    }
-                },
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::NotFound {
-                        Ok(None)
-                    } else {
-                        log::error!(
-                            "Failed to read current config {}: {}",
-                            config_file_path.display(),
-                            e
-                        );
-                        Err(Some(config_file_path))
-                    }
-                },
-            }
-        } else {
-            log::error!("No config file path found?");
-            Err(None)
+        // if let Some(config_file_path) = Config::config_file_path(&opts) {
+        match std::fs::read_to_string(&config_file_path) {
+            Ok(current_config) => {
+                let Some(backup_config_path) =
+                    Config::find_free_backup_file_name(&config_file_path)
+                else {
+                    log::error!("Failed to find a file name to back up the configuration to, ran out of files.");
+                    return Err(None);
+                };
+                if Config::backup_config_with_written_content_confirmation(
+                    &current_config,
+                    &config_file_path,
+                    &backup_config_path,
+                ) {
+                    Ok(Some(backup_config_path))
+                } else {
+                    log::error!(
+                        "Failed to back up config file: {}",
+                        backup_config_path.display()
+                    );
+                    Err(Some(backup_config_path))
+                }
+            },
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    Ok(None)
+                } else {
+                    log::error!(
+                        "Failed to read current config {}: {}",
+                        config_file_path.display(),
+                        e
+                    );
+                    Err(Some(config_file_path.clone()))
+                }
+            },
         }
     }
     fn autogen_config_message(backed_up_file_name: PathBuf) -> String {
@@ -404,11 +436,152 @@ impl Config {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
+pub async fn watch_config_file_changes<F, Fut>(config_file_path: PathBuf, on_config_change: F)
+where
+    F: Fn(Config) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    // in a gist, what we do here is fire the `on_config_change` function whenever there is a
+    // change in the config file, we do this by:
+    // 1. Trying to watch the provided config file for changes
+    // 2. If the file is deleted or does not exist, we periodically poll for it (manually, not
+    //    through filesystem events)
+    // 3. Once it exists, we start watching it for changes again
+    //
+    // we do this because the alternative is to watch its parent folder and this might cause the
+    // classic "too many open files" issue if there are a lot of files there and/or lots of Zellij
+    // instances
+    use crate::setup::Setup;
+    use notify::{self, Config as WatcherConfig, Event, PollWatcher, RecursiveMode, Watcher};
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    loop {
+        if config_file_path.exists() {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+
+            let mut watcher = match PollWatcher::new(
+                move |res: Result<Event, notify::Error>| {
+                    let _ = tx.send(res);
+                },
+                WatcherConfig::default().with_poll_interval(Duration::from_secs(1)),
+            ) {
+                Ok(watcher) => watcher,
+                Err(_) => break,
+            };
+
+            if watcher
+                .watch(&config_file_path, RecursiveMode::NonRecursive)
+                .is_err()
+            {
+                break;
+            }
+
+            while let Some(event_result) = rx.recv().await {
+                match event_result {
+                    Ok(event) => {
+                        if event.paths.contains(&config_file_path) {
+                            if event.kind.is_remove() {
+                                break;
+                            } else if event.kind.is_create() || event.kind.is_modify() {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                                if !config_file_path.exists() {
+                                    continue;
+                                }
+
+                                let mut cli_args_for_config = CliArgs::default();
+                                cli_args_for_config.config = Some(PathBuf::from(&config_file_path));
+                                if let Ok(new_config) = Setup::from_cli_args(&cli_args_for_config)
+                                    .map_err(|e| e.to_string())
+                                {
+                                    on_config_change(new_config.0).await;
+                                }
+                            }
+                        }
+                    },
+                    Err(_) => break,
+                }
+            }
+        }
+
+        while !config_file_path.exists() {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn watch_layout_dir_changes<F, Fut>(
+    layout_dir: PathBuf,
+    default_layout_name: Option<String>,
+    on_layout_change: F,
+) where
+    F: Fn(Vec<LayoutInfo>, Vec<LayoutWithError>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    use crate::input::layout::Layout;
+    use notify::{self, Config as WatcherConfig, Event, PollWatcher, RecursiveMode, Watcher};
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    loop {
+        if layout_dir.exists() {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+
+            let mut watcher = match PollWatcher::new(
+                move |res: Result<Event, notify::Error>| {
+                    let _ = tx.send(res);
+                },
+                WatcherConfig::default().with_poll_interval(Duration::from_secs(1)),
+            ) {
+                Ok(watcher) => watcher,
+                Err(_) => break,
+            };
+
+            if watcher
+                .watch(&layout_dir, RecursiveMode::Recursive)
+                .is_err()
+            {
+                break;
+            }
+
+            while let Some(event_result) = rx.recv().await {
+                match event_result {
+                    Ok(event) => {
+                        if event.kind.is_remove()
+                            || event.kind.is_create()
+                            || event.kind.is_modify()
+                        {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+
+                            if !layout_dir.exists() {
+                                break;
+                            }
+
+                            let (layouts, layout_errors) = Layout::list_available_layouts(
+                                Some(layout_dir.clone()),
+                                &default_layout_name,
+                            );
+                            on_layout_change(layouts, layout_errors).await;
+                        }
+                    },
+                    Err(_) => break,
+                }
+            }
+        }
+
+        while !layout_dir.exists() {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod config_test {
     use super::*;
-    use crate::data::{InputMode, Palette, PaletteColor, PluginTag, StyleDeclaration, Styling};
-    use crate::input::layout::{RunPlugin, RunPluginLocation};
+    use crate::data::{InputMode, Palette, PaletteColor, StyleDeclaration, Styling};
+    use crate::input::layout::RunPlugin;
     use crate::input::options::{Clipboard, OnForceClose};
     use crate::input::theme::{FrameConfig, Theme, Themes, UiConfig};
     use std::collections::{BTreeMap, HashMap};

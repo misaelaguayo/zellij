@@ -65,7 +65,10 @@ impl PluginConfig {
                     || tag == "configuration"
                     || tag == "plugin-manager"
                     || tag == "about"
+                    || tag == "share"
                     || tag == "multiple-select"
+                    || tag == "sequence"
+                    || tag == "layout-manager"
                 {
                     Some(PluginConfig {
                         path: PathBuf::from(&tag),

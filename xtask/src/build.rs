@@ -4,7 +4,7 @@
 //!
 //! - [`build`]: Builds general cargo projects (i.e. zellij components) with `cargo build`
 //! - [`manpage`]: Builds the manpage with `mandown`
-use crate::{flags, WorkspaceMember};
+use crate::{flags, metadata, WorkspaceMember};
 use anyhow::Context;
 use std::path::{Path, PathBuf};
 use xshell::{cmd, Shell};
@@ -84,6 +84,95 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
             }
         }
 
+        // Build client-server IPC protobuf definitions
+        {
+            let zellij_utils_basedir = crate::project_root().join("zellij-utils");
+            let _pd = sh.push_dir(zellij_utils_basedir);
+
+            let prost_ipc_dir = sh.current_dir().join("assets").join("prost_ipc");
+            let client_server_contract_dir =
+                sh.current_dir().join("src").join("client_server_contract");
+            std::fs::create_dir_all(&prost_ipc_dir).unwrap();
+
+            let mut prost = prost_build::Config::new();
+            let last_generated = prost_ipc_dir
+                .join("generated_client_server_api.rs")
+                .metadata()
+                .and_then(|m| m.modified());
+            let mut needs_regeneration = false;
+            prost.out_dir(prost_ipc_dir);
+            prost.include_file("generated_client_server_api.rs");
+            let mut proto_files = vec![];
+            for entry in std::fs::read_dir(&client_server_contract_dir).unwrap() {
+                let entry_path = entry.unwrap().path();
+                if entry_path.is_file() {
+                    if !entry_path
+                        .extension()
+                        .map(|e| e == "proto")
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    proto_files.push(entry_path.display().to_string());
+                    let modified = entry_path.metadata().and_then(|m| m.modified());
+                    needs_regeneration |= match (&last_generated, modified) {
+                        (Ok(last_generated), Ok(modified)) => modified >= *last_generated,
+                        // Couldn't read some metadata, assume needs update
+                        _ => true,
+                    }
+                }
+            }
+            if needs_regeneration {
+                prost
+                    .compile_protos(&proto_files, &[client_server_contract_dir])
+                    .unwrap();
+            }
+        }
+
+        // Build web server protobuf definitions
+        {
+            let zellij_utils_basedir = crate::project_root().join("zellij-utils");
+            let _pd = sh.push_dir(zellij_utils_basedir);
+
+            let prost_web_server_dir = sh.current_dir().join("assets").join("prost_web_server");
+            let web_server_contract_dir = sh.current_dir().join("src").join("web_server_contract");
+            std::fs::create_dir_all(&prost_web_server_dir).unwrap();
+
+            let mut prost = prost_build::Config::new();
+            let last_generated = prost_web_server_dir
+                .join("generated_web_server_api.rs")
+                .metadata()
+                .and_then(|m| m.modified());
+            let mut needs_regeneration = false;
+            prost.out_dir(prost_web_server_dir);
+            prost.include_file("generated_web_server_api.rs");
+            let mut proto_files = vec![];
+            for entry in std::fs::read_dir(&web_server_contract_dir).unwrap() {
+                let entry_path = entry.unwrap().path();
+                if entry_path.is_file() {
+                    if !entry_path
+                        .extension()
+                        .map(|e| e == "proto")
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    proto_files.push(entry_path.display().to_string());
+                    let modified = entry_path.metadata().and_then(|m| m.modified());
+                    needs_regeneration |= match (&last_generated, modified) {
+                        (Ok(last_generated), Ok(modified)) => modified >= *last_generated,
+                        // Couldn't read some metadata, assume needs update
+                        _ => true,
+                    }
+                }
+            }
+            if needs_regeneration {
+                prost
+                    .compile_protos(&proto_files, &[web_server_contract_dir])
+                    .unwrap();
+            }
+        }
+
         let _pd = sh.push_dir(Path::new(crate_name));
         // Tell the user where we are now
         println!();
@@ -94,6 +183,23 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
         let mut base_cmd = cmd!(sh, "{cargo} build");
         if flags.release {
             base_cmd = base_cmd.arg("--release");
+        }
+        if flags.no_web {
+            // Check if this crate has web features that need modification
+            match metadata::get_no_web_features(sh, crate_name)
+                .context("Failed to check web features")?
+            {
+                Some(features) => {
+                    base_cmd = base_cmd.arg("--no-default-features");
+                    if !features.is_empty() {
+                        base_cmd = base_cmd.arg("--features");
+                        base_cmd = base_cmd.arg(features);
+                    }
+                },
+                None => {
+                    // Crate doesn't have web features, build normally
+                },
+            }
         }
         base_cmd.run().with_context(err_context)?;
 

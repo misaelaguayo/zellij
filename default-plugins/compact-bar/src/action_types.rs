@@ -34,6 +34,7 @@ pub enum ActionType {
     NewTab,
     Detach,
     Quit,
+    NewStackedPane,
     Other(String), // Fallback for unhandled actions
 }
 
@@ -75,6 +76,7 @@ impl ActionType {
             },
             ActionType::SwitchToMode(input_mode) => format!("{:?}", input_mode),
             ActionType::TogglePaneEmbedOrFloating => "Float or embed".to_string(),
+            ActionType::NewStackedPane => "New stacked pane".to_string(),
             ActionType::ToggleFocusFullscreen => "Toggle fullscreen".to_string(),
             ActionType::ToggleFloatingPanes => "Show/hide floating panes".to_string(),
             ActionType::CloseFocus => "Close pane".to_string(),
@@ -92,21 +94,35 @@ impl ActionType {
 
     pub fn from_action(action: &Action) -> Self {
         match action {
-            Action::MoveFocus(_) => ActionType::MoveFocus,
-            Action::MovePane(Some(_)) => ActionType::MovePaneWithDirection,
-            Action::MovePane(None) => ActionType::MovePaneWithoutDirection,
-            Action::Resize(Resize::Increase, Some(_)) => ActionType::ResizeIncrease,
-            Action::Resize(Resize::Decrease, Some(_)) => ActionType::ResizeDecrease,
-            Action::Resize(_, None) => ActionType::ResizeAny,
-            Action::Search(_) => ActionType::Search,
-            Action::NewPane(Some(_), _, _) => ActionType::NewPaneWithDirection,
-            Action::NewPane(None, _, _) => ActionType::NewPaneWithoutDirection,
+            Action::MoveFocus { .. } => ActionType::MoveFocus,
+            Action::MovePane { direction: Some(_) } => ActionType::MovePaneWithDirection,
+            Action::MovePane { direction: None } => ActionType::MovePaneWithoutDirection,
+            Action::Resize {
+                resize: Resize::Increase,
+                direction: Some(_),
+            } => ActionType::ResizeIncrease,
+            Action::Resize {
+                resize: Resize::Decrease,
+                direction: Some(_),
+            } => ActionType::ResizeDecrease,
+            Action::Resize {
+                resize: _,
+                direction: None,
+            } => ActionType::ResizeAny,
+            Action::Search { .. } => ActionType::Search,
+            Action::NewPane {
+                direction: Some(_), ..
+            } => ActionType::NewPaneWithDirection,
+            Action::NewPane {
+                direction: None, ..
+            } => ActionType::NewPaneWithoutDirection,
+            Action::NewStackedPane { .. } => ActionType::NewStackedPane,
             Action::BreakPaneLeft | Action::BreakPaneRight => ActionType::BreakPaneLeftOrRight,
             Action::GoToPreviousTab | Action::GoToNextTab => ActionType::GoToAdjacentTab,
             Action::ScrollUp | Action::ScrollDown => ActionType::Scroll,
             Action::PageScrollUp | Action::PageScrollDown => ActionType::PageScroll,
             Action::HalfPageScrollUp | Action::HalfPageScrollDown => ActionType::HalfPageScroll,
-            Action::SwitchToMode(input_mode) => ActionType::SwitchToMode(*input_mode),
+            Action::SwitchToMode { input_mode } => ActionType::SwitchToMode(*input_mode),
             Action::TogglePaneEmbedOrFloating => ActionType::TogglePaneEmbedOrFloating,
             Action::ToggleFocusFullscreen => ActionType::ToggleFocusFullscreen,
             Action::ToggleFloatingPanes => ActionType::ToggleFloatingPanes,
@@ -122,7 +138,7 @@ impl ActionType {
             action if action.launches_plugin("configuration") => ActionType::Configuration,
             action if action.launches_plugin("plugin-manager") => ActionType::PluginManager,
             action if action.launches_plugin("zellij:about") => ActionType::About,
-            action if matches!(action, Action::NewTab(..)) => ActionType::NewTab,
+            action if matches!(action, Action::NewTab { .. }) => ActionType::NewTab,
             _ => ActionType::Other(format!("{:?}", action)),
         }
     }

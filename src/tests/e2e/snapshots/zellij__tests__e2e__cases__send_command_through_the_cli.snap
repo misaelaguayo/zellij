@@ -1,6 +1,5 @@
 ---
 source: src/tests/e2e/cases.rs
-assertion_line: 2372
 expression: last_snapshot
 ---
  Zellij (e2e-test)  Tab #1                                                                                                    Alt <[]>  VERTICAL 
@@ -8,7 +7,7 @@ expression: last_snapshot
 │$ /usr/src/zellij/x86_64-unknown-linux-musl/release/zellij run -s -- "/us││foo                                                                      │
 │r/src/zellij/fixtures/append-echo-script.sh"                             ││foo                                                                      │
 │$                                                                        ││█                                                                        │
-│                                                                         ││                                                                         │
+│$                                                                        ││                                                                         │
 │                                                                         ││                                                                         │
 │                                                                         ││                                                                         │
 │                                                                         ││                                                                         │
@@ -26,4 +25,4 @@ expression: last_snapshot
 │                                                                         ││                                                                         │
 │                                                                         ││                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘└ [ EXIT CODE: 0 ] <ENTER> re-run, <ESC> drop to shell, <Ctrl-c> exit ────┘
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> RESIZE  <h> MOVE  <s> SEARCH  <o> SESSION  <q> QUIT                                     ... 
+ Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> RESIZE  <h> MOVE  <s> SEARCH  <o> SESSION  <q> QUIT                                      ...

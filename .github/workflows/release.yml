@@ -6,9 +6,25 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-release:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: create_release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && '' || github.ref }}
+          release_name: Release ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: false
+
+  build-release-normal:
     needs: create-release
-    name: build-release
+    name: build-release-normal
     runs-on: ${{ matrix.os }}
     env:
       RUST_BACKTRACE: 1
@@ -22,19 +38,15 @@ jobs:
         include:
           - build: linux musl x64
             os: ubuntu-latest
-            rust: stable
             target: x86_64-unknown-linux-musl
           - build: linux musl aarch64
             os: ubuntu-latest
-            rust: stable
             target: aarch64-unknown-linux-musl
           - build: macos x64
             os: macos-latest
-            rust: stable
             target: x86_64-apple-darwin
           - build: macos aarch64
             os: macos-latest
-            rust: stable
             target: aarch64-apple-darwin
     steps:
       - name: Set release tag
@@ -60,39 +72,30 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: ${{ matrix.rust }}
           target: "${{ matrix.target }},wasm32-wasip1"
-          # Just to make sure the cache doesn't interfere with the build here
           cache: false
           rustflags: ""
 
       - name: Build release binary
         run: cargo xtask ci cross ${{ matrix.target }}
 
-      # this breaks on aarch64 and this if conditional isn't working for some reason: TODO: investigate
-      #- name: Strip release binary
-      #  if: runner.target != 'aarch64-unknown-linux-musl' && runner.target != 'aarch64-apple-darwin'
-      #  run: strip "target/${{ matrix.target }}/release/zellij"
+      - name: Create artifact
+        id: make-artifact
+        run: |
+          asset_name="zellij-${{ matrix.target }}.tar.gz"
+          tar cvzf "${asset_name}" -C "target/${{ matrix.target }}/release" zellij
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
 
       - name: Create checksum
         id: make-checksum
-        working-directory: ./target/${{ matrix.target }}/release
         run: |
-          name="zellij-${{ matrix.target }}.sha256sum"
+          checksum_name="zellij-${{ matrix.target }}.sha256sum"
           if [[ "$RUNNER_OS" != "macOS" ]]; then
-            sha256sum "zellij" > "${name}"
+            sha256sum "target/${{ matrix.target }}/release/zellij" > "${checksum_name}"
           else
-            shasum -a 256 "zellij" > "${name}"
+            shasum -a 256 "target/${{ matrix.target }}/release/zellij" > "${checksum_name}"
           fi
-          echo "::set-output name=name::${name}"
-
-      - name: Tar release
-        id: make-artifact
-        working-directory: ./target/${{ matrix.target }}/release
-        run: |
-          name="zellij-${{ matrix.target }}.tar.gz"
-          tar cvzf "${name}" "zellij"
-          echo "::set-output name=name::${name}"
+          echo "checksum_name=${checksum_name}" >> "$GITHUB_OUTPUT"
 
       - name: Upload release archive
         uses: actions/upload-release-asset@v1.0.2
@@ -100,7 +103,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.target }}/release/${{ steps.make-artifact.outputs.name }}
+          asset_path: ${{ steps.make-artifact.outputs.asset_name }}
           asset_name: zellij-${{matrix.target}}.tar.gz
           asset_content_type: application/octet-stream
 
@@ -110,23 +113,101 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.target }}/release/${{ steps.make-checksum.outputs.name }}
+          asset_path: ${{ steps.make-checksum.outputs.checksum_name }}
           asset_name: zellij-${{matrix.target}}.sha256sum
           asset_content_type: text/plain
 
-  create-release:
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+  build-release-noweb:
+    needs: create-release
+    name: build-release-noweb
+    runs-on: ${{ matrix.os }}
+    env:
+      RUST_BACKTRACE: 1
+    strategy:
+      matrix:
+        build:
+          - linux musl x64
+          - linux musl aarch64
+          - macos x64
+          - macos aarch64
+        include:
+          - build: linux musl x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - build: linux musl aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+          - build: macos x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - build: macos aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
     steps:
-      - name: create_release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Set release tag
+        run: |
+          if [ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]; then
+            echo "RELEASE_TAG=main" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=${GITHUB_REF#refs/tags/}"  >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install musl-tools
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: "${{ matrix.target }},wasm32-wasip1"
+          cache: false
+          rustflags: ""
+
+      - name: Build release binary (no-web)
+        run: cargo xtask ci cross ${{ matrix.target }} --no-web
+
+      - name: Create artifact
+        id: make-artifact
+        run: |
+          asset_name="zellij-no-web-${{ matrix.target }}.tar.gz"
+          tar cvzf "${asset_name}" -C "target/${{ matrix.target }}/release" zellij
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Create checksum
+        id: make-checksum
+        run: |
+          checksum_name="zellij-no-web-${{ matrix.target }}.sha256sum"
+          if [[ "$RUNNER_OS" != "macOS" ]]; then
+            sha256sum "target/${{ matrix.target }}/release/zellij" > "${checksum_name}"
+          else
+            shasum -a 256 "target/${{ matrix.target }}/release/zellij" > "${checksum_name}"
+          fi
+          echo "checksum_name=${checksum_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release archive
+        uses: actions/upload-release-asset@v1.0.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && '' || github.ref }}
-          release_name: Release ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
-          draft: ${{ github.event_name == 'workflow_dispatch' }}
-          prerelease: false
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.make-artifact.outputs.asset_name }}
+          asset_name: zellij-no-web-${{matrix.target}}.tar.gz
+          asset_content_type: application/octet-stream
 
+      - name: Upload checksum
+        uses: actions/upload-release-asset@v1.0.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.make-checksum.outputs.checksum_name }}
+          asset_name: zellij-no-web-${{matrix.target}}.sha256sum
+          asset_content_type: text/plain

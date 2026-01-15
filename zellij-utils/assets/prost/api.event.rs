@@ -9,7 +9,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -68,14 +68,52 @@ pub mod event {
         #[prost(message, tag="26")]
         PastedTextPayload(super::PastedTextPayload),
         #[prost(message, tag="27")]
+        WebServerStatusPayload(super::WebServerStatusPayload),
+        #[prost(message, tag="28")]
+        FailedToStartWebServerPayload(super::FailedToStartWebServerPayload),
+        #[prost(message, tag="29")]
         InterceptedKeyPayload(super::super::key::Key),
+        #[prost(message, tag="30")]
+        PaneRenderReportPayload(super::PaneRenderReportPayload),
+        #[prost(message, tag="31")]
+        UserActionPayload(super::UserActionPayload),
+        #[prost(message, tag="32")]
+        ActionCompletePayload(super::ActionCompletePayload),
+        #[prost(message, tag="33")]
+        CwdChangedPayload(super::CwdChangedPayload),
+        #[prost(message, tag="34")]
+        AvailableLayoutInfoPayload(super::AvailableLayoutInfoPayload),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CwdChangedPayload {
+    #[prost(message, optional, tag="1")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    #[prost(string, tag="2")]
+    pub new_cwd: ::prost::alloc::string::String,
+    #[prost(uint32, repeated, tag="3")]
+    pub focused_client_ids: ::prost::alloc::vec::Vec<u32>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FailedToStartWebServerPayload {
+    #[prost(string, tag="1")]
+    pub error: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PastedTextPayload {
     #[prost(string, tag="1")]
     pub pasted_text: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WebServerStatusPayload {
+    #[prost(enumeration="WebServerStatusIndication", tag="1")]
+    pub web_server_status_indication: i32,
+    #[prost(string, optional, tag="2")]
+    pub payload: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -179,6 +217,14 @@ pub struct SessionUpdatePayload {
     pub session_manifests: ::prost::alloc::vec::Vec<SessionManifest>,
     #[prost(message, repeated, tag="2")]
     pub resurrectable_sessions: ::prost::alloc::vec::Vec<ResurrectableSession>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AvailableLayoutInfoPayload {
+    #[prost(message, repeated, tag="1")]
+    pub available_layouts: ::prost::alloc::vec::Vec<LayoutInfo>,
+    #[prost(message, repeated, tag="2")]
+    pub layouts_with_errors: ::prost::alloc::vec::Vec<LayoutWithError>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -313,8 +359,14 @@ pub struct SessionManifest {
     pub available_layouts: ::prost::alloc::vec::Vec<LayoutInfo>,
     #[prost(message, repeated, tag="7")]
     pub plugins: ::prost::alloc::vec::Vec<PluginInfo>,
-    #[prost(message, repeated, tag="8")]
+    #[prost(bool, tag="8")]
+    pub web_clients_allowed: bool,
+    #[prost(uint32, tag="9")]
+    pub web_client_count: u32,
+    #[prost(message, repeated, tag="10")]
     pub tab_history: ::prost::alloc::vec::Vec<ClientTabHistory>,
+    #[prost(message, repeated, tag="11")]
+    pub pane_history: ::prost::alloc::vec::Vec<ClientPaneHistory>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -323,6 +375,14 @@ pub struct ClientTabHistory {
     pub client_id: u32,
     #[prost(uint32, repeated, tag="2")]
     pub tab_history: ::prost::alloc::vec::Vec<u32>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClientPaneHistory {
+    #[prost(uint32, tag="1")]
+    pub client_id: u32,
+    #[prost(message, repeated, tag="2")]
+    pub pane_history: ::prost::alloc::vec::Vec<PaneId>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -341,6 +401,88 @@ pub struct LayoutInfo {
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag="2")]
     pub source: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="5")]
+    pub layout_metadata: ::core::option::Option<LayoutMetadata>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LayoutWithError {
+    #[prost(string, tag="1")]
+    pub layout_name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="2")]
+    pub error: ::core::option::Option<LayoutParsingError>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LayoutParsingError {
+    #[prost(oneof="layout_parsing_error::ErrorType", tags="1, 2")]
+    pub error_type: ::core::option::Option<layout_parsing_error::ErrorType>,
+}
+/// Nested message and enum types in `LayoutParsingError`.
+pub mod layout_parsing_error {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum ErrorType {
+        #[prost(message, tag="1")]
+        KdlError(super::KdlErrorVariant),
+        #[prost(message, tag="2")]
+        SyntaxError(super::SyntaxError),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KdlErrorVariant {
+    #[prost(message, optional, tag="1")]
+    pub kdl_error: ::core::option::Option<KdlError>,
+    #[prost(string, tag="2")]
+    pub file_name: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub source_code: ::prost::alloc::string::String,
+}
+/// Empty message, just a marker
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SyntaxError {
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KdlError {
+    #[prost(string, tag="1")]
+    pub error_message: ::prost::alloc::string::String,
+    #[prost(uint64, optional, tag="2")]
+    pub offset: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag="3")]
+    pub len: ::core::option::Option<u64>,
+    #[prost(string, optional, tag="4")]
+    pub help_message: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LayoutMetadata {
+    #[prost(message, repeated, tag="1")]
+    pub tabs: ::prost::alloc::vec::Vec<TabMetadata>,
+    #[prost(string, tag="2")]
+    pub creation_time: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub update_time: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TabMetadata {
+    #[prost(message, repeated, tag="1")]
+    pub pane_metadata: ::prost::alloc::vec::Vec<PaneMetadata>,
+    #[prost(string, optional, tag="2")]
+    pub name: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaneMetadata {
+    #[prost(string, optional, tag="1")]
+    pub name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="2")]
+    pub is_plugin: bool,
+    #[prost(bool, tag="3")]
+    pub is_builtin_plugin: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -464,7 +606,19 @@ pub struct ModeUpdatePayload {
     #[prost(string, optional, tag="8")]
     pub shell: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="9")]
+    pub web_clients_allowed: ::core::option::Option<bool>,
+    #[prost(enumeration="WebSharing", optional, tag="10")]
+    pub web_sharing: ::core::option::Option<i32>,
+    #[prost(bool, optional, tag="11")]
     pub currently_marking_pane_group: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="12")]
+    pub is_web_client: ::core::option::Option<bool>,
+    #[prost(string, optional, tag="13")]
+    pub web_server_ip: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint32, optional, tag="14")]
+    pub web_server_port: ::core::option::Option<u32>,
+    #[prost(bool, optional, tag="15")]
+    pub web_server_capability: ::core::option::Option<bool>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -481,6 +635,79 @@ pub struct KeyBind {
     pub key: ::core::option::Option<super::key::Key>,
     #[prost(message, repeated, tag="2")]
     pub action: ::prost::alloc::vec::Vec<super::action::Action>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaneRenderReportPayload {
+    #[prost(message, repeated, tag="1")]
+    pub pane_contents: ::prost::alloc::vec::Vec<PaneContentsEntry>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaneContentsEntry {
+    #[prost(message, optional, tag="1")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    #[prost(message, optional, tag="2")]
+    pub pane_contents: ::core::option::Option<PaneContents>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaneContents {
+    #[prost(string, repeated, tag="1")]
+    pub viewport: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="2")]
+    pub selected_text: ::core::option::Option<SelectedText>,
+    #[prost(string, repeated, tag="3")]
+    pub lines_above_viewport: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag="4")]
+    pub lines_below_viewport: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaneScrollbackResponse {
+    #[prost(oneof="pane_scrollback_response::Response", tags="1, 2")]
+    pub response: ::core::option::Option<pane_scrollback_response::Response>,
+}
+/// Nested message and enum types in `PaneScrollbackResponse`.
+pub mod pane_scrollback_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Response {
+        #[prost(message, tag="1")]
+        Ok(super::PaneContents),
+        #[prost(string, tag="2")]
+        Err(::prost::alloc::string::String),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SelectedText {
+    #[prost(message, optional, tag="1")]
+    pub start: ::core::option::Option<super::action::Position>,
+    #[prost(message, optional, tag="2")]
+    pub end: ::core::option::Option<super::action::Position>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UserActionPayload {
+    #[prost(message, optional, tag="1")]
+    pub action: ::core::option::Option<super::action::Action>,
+    #[prost(uint32, tag="2")]
+    pub client_id: u32,
+    #[prost(uint32, optional, tag="3")]
+    pub terminal_id: ::core::option::Option<u32>,
+    #[prost(uint32, optional, tag="4")]
+    pub cli_client_id: ::core::option::Option<u32>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ActionCompletePayload {
+    #[prost(message, optional, tag="1")]
+    pub action: ::core::option::Option<super::action::Action>,
+    #[prost(message, optional, tag="2")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    #[prost(message, repeated, tag="3")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -531,8 +758,15 @@ pub enum EventType {
     FailedToChangeHostFolder = 28,
     PastedText = 29,
     ConfigWasWrittenToDisk = 30,
-    BeforeClose = 31,
-    InterceptedKeyPress = 32,
+    WebServerStatus = 31,
+    BeforeClose = 32,
+    FailedToStartWebServer = 34,
+    InterceptedKeyPress = 35,
+    PaneRenderReport = 36,
+    UserAction = 37,
+    ActionComplete = 38,
+    CwdChanged = 39,
+    AvailableLayoutInfo = 40,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -572,8 +806,15 @@ impl EventType {
             EventType::FailedToChangeHostFolder => "FailedToChangeHostFolder",
             EventType::PastedText => "PastedText",
             EventType::ConfigWasWrittenToDisk => "ConfigWasWrittenToDisk",
+            EventType::WebServerStatus => "WebServerStatus",
             EventType::BeforeClose => "BeforeClose",
+            EventType::FailedToStartWebServer => "FailedToStartWebServer",
             EventType::InterceptedKeyPress => "InterceptedKeyPress",
+            EventType::PaneRenderReport => "PaneRenderReport",
+            EventType::UserAction => "UserAction",
+            EventType::ActionComplete => "ActionComplete",
+            EventType::CwdChanged => "CwdChanged",
+            EventType::AvailableLayoutInfo => "AvailableLayoutInfo",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -610,8 +851,44 @@ impl EventType {
             "FailedToChangeHostFolder" => Some(Self::FailedToChangeHostFolder),
             "PastedText" => Some(Self::PastedText),
             "ConfigWasWrittenToDisk" => Some(Self::ConfigWasWrittenToDisk),
+            "WebServerStatus" => Some(Self::WebServerStatus),
             "BeforeClose" => Some(Self::BeforeClose),
+            "FailedToStartWebServer" => Some(Self::FailedToStartWebServer),
             "InterceptedKeyPress" => Some(Self::InterceptedKeyPress),
+            "PaneRenderReport" => Some(Self::PaneRenderReport),
+            "UserAction" => Some(Self::UserAction),
+            "ActionComplete" => Some(Self::ActionComplete),
+            "CwdChanged" => Some(Self::CwdChanged),
+            "AvailableLayoutInfo" => Some(Self::AvailableLayoutInfo),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum WebServerStatusIndication {
+    Online = 0,
+    Offline = 1,
+    DifferentVersion = 2,
+}
+impl WebServerStatusIndication {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            WebServerStatusIndication::Online => "Online",
+            WebServerStatusIndication::Offline => "Offline",
+            WebServerStatusIndication::DifferentVersion => "DifferentVersion",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "Online" => Some(Self::Online),
+            "Offline" => Some(Self::Offline),
+            "DifferentVersion" => Some(Self::DifferentVersion),
             _ => None,
         }
     }
@@ -709,6 +986,35 @@ impl MouseEventName {
             "MouseHold" => Some(Self::MouseHold),
             "MouseRelease" => Some(Self::MouseRelease),
             "MouseHover" => Some(Self::MouseHover),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum WebSharing {
+    On = 0,
+    Off = 1,
+    Disabled = 2,
+}
+impl WebSharing {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            WebSharing::On => "On",
+            WebSharing::Off => "Off",
+            WebSharing::Disabled => "Disabled",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "On" => Some(Self::On),
+            "Off" => Some(Self::Off),
+            "Disabled" => Some(Self::Disabled),
             _ => None,
         }
     }

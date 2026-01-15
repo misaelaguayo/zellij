@@ -30,6 +30,17 @@ pub struct OpenFilePayload {
     pub originating_plugin: Option<OriginatingPlugin>,
 }
 
+impl Default for OpenFilePayload {
+    fn default() -> Self {
+        OpenFilePayload {
+            path: PathBuf::new(),
+            line_number: None,
+            cwd: None,
+            originating_plugin: None,
+        }
+    }
+}
+
 impl OpenFilePayload {
     pub fn new(path: PathBuf, line_number: Option<usize>, cwd: Option<PathBuf>) -> Self {
         OpenFilePayload {
@@ -59,6 +70,8 @@ pub struct RunCommand {
     pub hold_on_start: bool,
     #[serde(default)]
     pub originating_plugin: Option<OriginatingPlugin>,
+    #[serde(default)]
+    pub use_terminal_title: bool,
 }
 
 impl std::fmt::Display for RunCommand {
@@ -94,6 +107,8 @@ pub struct RunCommandAction {
     pub hold_on_start: bool,
     #[serde(default)]
     pub originating_plugin: Option<OriginatingPlugin>,
+    #[serde(default)]
+    pub use_terminal_title: bool,
 }
 
 impl From<RunCommandAction> for RunCommand {
@@ -105,6 +120,7 @@ impl From<RunCommandAction> for RunCommand {
             hold_on_close: action.hold_on_close,
             hold_on_start: action.hold_on_start,
             originating_plugin: action.originating_plugin,
+            use_terminal_title: action.use_terminal_title,
         }
     }
 }
@@ -119,7 +135,25 @@ impl From<RunCommand> for RunCommandAction {
             hold_on_close: run_command.hold_on_close,
             hold_on_start: run_command.hold_on_start,
             originating_plugin: run_command.originating_plugin,
+            use_terminal_title: run_command.use_terminal_title,
         }
+    }
+}
+
+impl RunCommandAction {
+    pub fn new(mut command: Vec<String>) -> Self {
+        if command.is_empty() {
+            Default::default()
+        } else {
+            RunCommandAction {
+                command: PathBuf::from(command.remove(0)),
+                args: command,
+                ..Default::default()
+            }
+        }
+    }
+    pub fn populate_originating_plugin(&mut self, originating_plugin: OriginatingPlugin) {
+        self.originating_plugin = Some(originating_plugin);
     }
 }
 

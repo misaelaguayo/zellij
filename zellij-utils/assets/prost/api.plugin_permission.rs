@@ -12,7 +12,11 @@ pub enum PermissionType {
     MessageAndLaunchOtherPlugins = 8,
     Reconfigure = 9,
     FullHdAccess = 10,
-    InterceptInput = 11,
+    StartWebServer = 11,
+    InterceptInput = 12,
+    ReadPaneContents = 13,
+    RunActionsAsUser = 14,
+    WriteToClipboard = 15,
 }
 impl PermissionType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -32,7 +36,11 @@ impl PermissionType {
             PermissionType::MessageAndLaunchOtherPlugins => "MessageAndLaunchOtherPlugins",
             PermissionType::Reconfigure => "Reconfigure",
             PermissionType::FullHdAccess => "FullHdAccess",
+            PermissionType::StartWebServer => "StartWebServer",
             PermissionType::InterceptInput => "InterceptInput",
+            PermissionType::ReadPaneContents => "ReadPaneContents",
+            PermissionType::RunActionsAsUser => "RunActionsAsUser",
+            PermissionType::WriteToClipboard => "WriteToClipboard",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -49,7 +57,11 @@ impl PermissionType {
             "MessageAndLaunchOtherPlugins" => Some(Self::MessageAndLaunchOtherPlugins),
             "Reconfigure" => Some(Self::Reconfigure),
             "FullHdAccess" => Some(Self::FullHdAccess),
+            "StartWebServer" => Some(Self::StartWebServer),
             "InterceptInput" => Some(Self::InterceptInput),
+            "ReadPaneContents" => Some(Self::ReadPaneContents),
+            "RunActionsAsUser" => Some(Self::RunActionsAsUser),
+            "WriteToClipboard" => Some(Self::WriteToClipboard),
             _ => None,
         }
     }

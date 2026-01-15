@@ -1,4 +1,5 @@
-use crate::output::{CharacterChunk, SixelImageChunk};
+use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
+use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
 use crate::panes::{
@@ -6,6 +7,7 @@ use crate::panes::{
     terminal_character::{render_first_run_banner, TerminalCharacter, EMPTY_TERMINAL_CHARACTER},
 };
 use crate::pty::VteBytes;
+use crate::route::NotificationEnd;
 use crate::tab::{AdjustedInput, Pane};
 use crate::ClientId;
 use std::cell::RefCell;
@@ -14,6 +16,7 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::{self, Instant};
 use vte;
+use zellij_utils::data::PaneContents;
 use zellij_utils::input::command::RunCommand;
 use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
 use zellij_utils::pane_size::Offset;
@@ -140,6 +143,7 @@ pub struct TerminalPane {
     invoked_with: Option<Run>,
     #[allow(dead_code)]
     arrow_fonts: bool,
+    notification_end: Option<NotificationEnd>,
 }
 
 impl Pane for TerminalPane {
@@ -189,15 +193,32 @@ impl Pane for TerminalPane {
         self.reflow_lines();
     }
     fn handle_pty_bytes(&mut self, bytes: VteBytes) {
+        use crate::panes::kitty_graphics::ApcAdvanceResult;
         self.set_should_render(true);
-
-        self.grid.handle_apc_bytes(&bytes);
-
         for &byte in &bytes {
-            self.vte_parser.advance(&mut self.grid, byte);
+            // Intercept APC sequences for kitty graphics before VTE
+            match self.grid.kitty_apc_parser.advance(byte) {
+                ApcAdvanceResult::Continue => {
+                    // APC parser consumed the byte, don't send to VTE
+                }
+                ApcAdvanceResult::Complete(cmd) => {
+                    // Process the kitty graphics command
+                    self.grid.handle_kitty_command(cmd);
+                }
+                ApcAdvanceResult::NotApc(buffered) => {
+                    // Not an APC sequence, forward buffered bytes to VTE
+                    for b in buffered {
+                        self.vte_parser.advance(&mut self.grid, b);
+                    }
+                }
+                ApcAdvanceResult::Error => {
+                    // Parse error, reset parser state
+                    self.grid.kitty_apc_parser.reset();
+                }
+            }
         }
     }
-    fn cursor_coordinates(&self) -> Option<(usize, usize)> {
+    fn cursor_coordinates(&self, _client_id: Option<ClientId>) -> Option<(usize, usize)> {
         // (x, y)
         if self.get_content_rows() < 1 || self.get_content_columns() < 1 {
             // do not render cursor if there's no room for it
@@ -216,14 +237,14 @@ impl Pane for TerminalPane {
         key_with_modifier: &Option<KeyWithModifier>,
         raw_input_bytes: Vec<u8>,
         raw_input_bytes_are_kitty: bool,
-        _client_id: Option<ClientId>,
+        client_id: Option<ClientId>,
     ) -> Option<AdjustedInput> {
         // there are some cases in which the terminal state means that input sent to it
         // needs to be adjusted.
         // here we match against those cases - if need be, we adjust the input and if not
         // we send back the original input
 
-        self.reset_selection();
+        self.reset_selection(client_id);
         if !self.grid.bracketed_paste_mode {
             // Zellij itself operates in bracketed paste mode, so the terminal sends these
             // instructions (bracketed paste start and bracketed paste end respectively)
@@ -310,7 +331,7 @@ impl Pane for TerminalPane {
     fn render(
         &mut self,
         _client_id: Option<ClientId>,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>)>> {
+    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>, Vec<KittyImageChunk>)>> {
         if self.should_render() {
             let content_x = self.get_content_x();
             let content_y = self.get_content_y();
@@ -462,7 +483,7 @@ impl Pane for TerminalPane {
         let pane_title = if self.pane_name.is_empty() && input_mode == InputMode::RenamePane {
             "Enter name..."
         } else if self.pane_name.is_empty() {
-            self.grid.title.as_deref().unwrap_or(&self.pane_title)
+            self.grid.title.as_deref().unwrap_or("")
         } else {
             &self.pane_name
         };
@@ -525,7 +546,7 @@ impl Pane for TerminalPane {
         self.geom.y -= count;
         self.reflow_lines();
     }
-    fn dump_screen(&self, full: bool) -> String {
+    fn dump_screen(&self, full: bool, _client_id: Option<ClientId>) -> String {
         self.grid.dump_screen(full)
     }
     fn clear_screen(&mut self) {
@@ -598,11 +619,11 @@ impl Pane for TerminalPane {
         self.set_should_render(true);
     }
 
-    fn reset_selection(&mut self) {
+    fn reset_selection(&mut self, _client_id: Option<ClientId>) {
         self.grid.reset_selection();
     }
 
-    fn get_selected_text(&self) -> Option<String> {
+    fn get_selected_text(&self, _client_id: ClientId) -> Option<String> {
         self.grid.get_selected_text()
     }
 
@@ -737,6 +758,19 @@ impl Pane for TerminalPane {
     fn hold(&mut self, exit_status: Option<i32>, is_first_run: bool, run_command: RunCommand) {
         self.invoked_with = Some(Run::Command(run_command.clone()));
         self.is_held = Some((exit_status, is_first_run, run_command));
+        if let Some(notification_end) = self.notification_end.as_mut() {
+            if let Some(exit_status) = exit_status {
+                notification_end.set_exit_status(exit_status);
+
+                // Check if unblock condition is met
+                if let Some(condition) = notification_end.unblock_condition() {
+                    if condition.is_met(exit_status) {
+                        // Condition met - drop the NotificationEnd now to unblock
+                        drop(self.notification_end.take());
+                    }
+                }
+            }
+        }
         if is_first_run {
             self.render_first_run_banner();
         }
@@ -884,6 +918,25 @@ impl Pane for TerminalPane {
     fn reset_logical_position(&mut self) {
         self.geom.logical_position = None;
     }
+    fn pane_contents(
+        &self,
+        _client_id: Option<ClientId>,
+        get_full_scrollback: bool,
+    ) -> PaneContents {
+        self.grid.pane_contents(get_full_scrollback)
+    }
+    fn update_exit_status(&mut self, exit_status: i32) {
+        if let Some(notification_end) = self.notification_end.as_mut() {
+            notification_end.set_exit_status(exit_status);
+            // Check if unblock condition is met
+            if let Some(condition) = notification_end.unblock_condition() {
+                if condition.is_met(exit_status) {
+                    // Condition met - drop the NotificationEnd now to unblock
+                    drop(self.notification_end.take());
+                }
+            }
+        }
+    }
 }
 
 impl TerminalPane {
@@ -897,6 +950,7 @@ impl TerminalPane {
         link_handler: Rc<RefCell<LinkHandler>>,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         sixel_image_store: Rc<RefCell<SixelImageStore>>,
+        kitty_image_store: Rc<RefCell<KittyImageStore>>,
         terminal_emulator_colors: Rc<RefCell<Palette>>,
         terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
         initial_pane_title: Option<String>,
@@ -905,6 +959,7 @@ impl TerminalPane {
         arrow_fonts: bool,
         styled_underlines: bool,
         explicitly_disable_keyboard_protocol: bool,
+        mut notification_end: Option<NotificationEnd>,
     ) -> TerminalPane {
         let initial_pane_title =
             initial_pane_title.unwrap_or_else(|| format!("Pane #{}", pane_index));
@@ -916,12 +971,16 @@ impl TerminalPane {
             link_handler,
             character_cell_size,
             sixel_image_store,
+            kitty_image_store,
             style.clone(),
             debug,
             arrow_fonts,
             styled_underlines,
             explicitly_disable_keyboard_protocol,
         );
+        if let Some(notification_end) = notification_end.as_mut() {
+            notification_end.set_affected_pane_id(PaneId::Terminal(pid));
+        }
         TerminalPane {
             frame: HashMap::new(),
             content_offset: Offset::default(),
@@ -946,6 +1005,7 @@ impl TerminalPane {
             pane_frame_color_override: None,
             invoked_with,
             arrow_fonts,
+            notification_end,
         }
     }
     pub fn get_x(&self) -> usize {

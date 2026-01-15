@@ -1,9 +1,9 @@
 use async_std::task;
 use zellij_utils::consts::{
     session_info_cache_file_name, session_info_folder_for_session, session_layout_cache_file_name,
-    ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
+    VERSION, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
 };
-use zellij_utils::data::{Event, HttpVerb, SessionInfo};
+use zellij_utils::data::{Event, HttpVerb, SessionInfo, WebServerStatus};
 use zellij_utils::errors::{prelude::*, BackgroundJobContext, ContextType};
 use zellij_utils::input::layout::RunPlugin;
 
@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use crate::panes::PaneId;
 use crate::plugins::{PluginId, PluginInstruction};
+use crate::pty::PtyInstruction;
 use crate::screen::ScreenInstruction;
 use crate::thread_bus::Bus;
 use crate::ClientId;
@@ -57,6 +58,7 @@ pub enum BackgroundJob {
     ),
     HighlightPanesWithMessage(Vec<PaneId>, String),
     RenderToClients,
+    QueryZellijWebServerStatus,
     Exit,
 }
 
@@ -80,6 +82,9 @@ impl From<&BackgroundJob> for BackgroundJobContext {
             BackgroundJob::HighlightPanesWithMessage(..) => {
                 BackgroundJobContext::HighlightPanesWithMessage
             },
+            BackgroundJob::QueryZellijWebServerStatus => {
+                BackgroundJobContext::QueryZellijWebServerStatus
+            },
             BackgroundJob::Exit => BackgroundJobContext::Exit,
         }
     }
@@ -96,6 +101,7 @@ pub(crate) fn background_jobs_main(
     bus: Bus<BackgroundJob>,
     serialization_interval: Option<u64>,
     disable_session_metadata: bool,
+    web_server_base_url: String,
 ) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut running_jobs: HashMap<BackgroundJob, Instant> = HashMap::new();
@@ -198,6 +204,7 @@ pub(crate) fn background_jobs_main(
                             let current_session_name =
                                 current_session_name.lock().unwrap().to_string();
                             let current_session_info = current_session_info.lock().unwrap().clone();
+                            let available_layouts = current_session_info.available_layouts.clone();
                             let current_session_layout =
                                 current_session_layout.lock().unwrap().clone();
                             if !disable_session_metadata {
@@ -215,6 +222,8 @@ pub(crate) fn background_jobs_main(
                                     let current_session_plugin_list =
                                         current_session_plugin_list.lock().unwrap().clone();
                                     session_info.populate_plugin_list(current_session_plugin_list);
+                                    // these are not serialized, so must be explicitly added
+                                    session_info.available_layouts = available_layouts.clone();
                                 }
                             }
                             let resurrectable_sessions =
@@ -223,6 +232,7 @@ pub(crate) fn background_jobs_main(
                                 session_infos_on_machine,
                                 resurrectable_sessions,
                             ));
+                            let _ = senders.send_to_pty(PtyInstruction::UpdateAndReportCwds);
                             if last_serialization_time
                                 .lock()
                                 .unwrap()
@@ -232,7 +242,9 @@ pub(crate) fn background_jobs_main(
                                     .unwrap_or(DEFAULT_SERIALIZATION_INTERVAL)
                                     .into()
                             {
-                                let _ = senders.send_to_screen(ScreenInstruction::DumpLayoutToHd);
+                                let _ = senders.send_to_screen(
+                                    ScreenInstruction::SerializeLayoutForResurrection,
+                                );
                                 *last_serialization_time.lock().unwrap() = Instant::now();
                             }
                             task::sleep(std::time::Duration::from_millis(SESSION_READ_DURATION))
@@ -369,6 +381,89 @@ pub(crate) fn background_jobs_main(
                     }
                 });
             },
+            BackgroundJob::QueryZellijWebServerStatus => {
+                if !cfg!(feature = "web_server_capability") {
+                    // no web server capability, no need to query
+                    continue;
+                }
+
+                task::spawn({
+                    let http_client = http_client.clone();
+                    let senders = bus.senders.clone();
+                    let web_server_base_url = web_server_base_url.clone();
+                    async move {
+                        async fn web_request(
+                            http_client: HttpClient,
+                            web_server_base_url: &str,
+                        ) -> Result<
+                            (u16, Vec<u8>), // status_code, body
+                            isahc::Error,
+                        > {
+                            let request =
+                                Request::get(format!("{}/info/version", web_server_base_url,));
+                            let req = request.body(())?;
+                            let mut res = http_client.send_async(req).await?;
+
+                            let status_code = res.status();
+                            let body = res.bytes().await?;
+                            Ok((status_code.as_u16(), body))
+                        }
+                        let Some(http_client) = http_client else {
+                            log::error!("Cannot perform http request, likely due to a misconfigured http client");
+                            return;
+                        };
+
+                        let http_client = http_client.clone();
+                        match web_request(http_client, &web_server_base_url).await {
+                            Ok((status, body)) => {
+                                if status == 200 && &body == VERSION.as_bytes() {
+                                    // online
+                                    let _ =
+                                        senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                            None,
+                                            None,
+                                            Event::WebServerStatus(WebServerStatus::Online(
+                                                web_server_base_url.clone(),
+                                            )),
+                                        )]));
+                                } else if status == 200 {
+                                    let _ =
+                                        senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                            None,
+                                            None,
+                                            Event::WebServerStatus(
+                                                WebServerStatus::DifferentVersion(
+                                                    String::from_utf8_lossy(&body).to_string(),
+                                                ),
+                                            ),
+                                        )]));
+                                } else {
+                                    // offline/error
+                                    let _ =
+                                        senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                            None,
+                                            None,
+                                            Event::WebServerStatus(WebServerStatus::Offline),
+                                        )]));
+                                }
+                            },
+                            Err(e) => {
+                                if e.kind() == isahc::error::ErrorKind::ConnectionFailed {
+                                    let _ =
+                                        senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                            None,
+                                            None,
+                                            Event::WebServerStatus(WebServerStatus::Offline),
+                                        )]));
+                                } else {
+                                    // no-op - otherwise we'll get errors if we were mid-request
+                                    // (eg. when the server was shut down by a user action)
+                                }
+                            },
+                        }
+                    }
+                });
+            },
             BackgroundJob::RenderToClients => {
                 // last_render_request being Some() represents a render request that is pending
                 // last_render_request is only ever set to Some() if an async task is spawned to
@@ -395,7 +490,7 @@ pub(crate) fn background_jobs_main(
                         let task_start_time = current_time;
                         async move {
                             task::sleep(std::time::Duration::from_millis(REPAINT_DELAY_MS)).await;
-                            let _ = senders.send_to_screen(ScreenInstruction::Render);
+                            let _ = senders.send_to_screen(ScreenInstruction::RenderToClients);
                             {
                                 let mut last_render_request = last_render_request.lock().unwrap();
                                 if let Some(last_render_request) = *last_render_request {

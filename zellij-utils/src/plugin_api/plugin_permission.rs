@@ -26,7 +26,11 @@ impl TryFrom<ProtobufPermissionType> for PermissionType {
             },
             ProtobufPermissionType::Reconfigure => Ok(PermissionType::Reconfigure),
             ProtobufPermissionType::FullHdAccess => Ok(PermissionType::FullHdAccess),
+            ProtobufPermissionType::StartWebServer => Ok(PermissionType::StartWebServer),
             ProtobufPermissionType::InterceptInput => Ok(PermissionType::InterceptInput),
+            ProtobufPermissionType::ReadPaneContents => Ok(PermissionType::ReadPaneContents),
+            ProtobufPermissionType::RunActionsAsUser => Ok(PermissionType::RunActionsAsUser),
+            ProtobufPermissionType::WriteToClipboard => Ok(PermissionType::WriteToClipboard),
         }
     }
 }
@@ -54,7 +58,11 @@ impl TryFrom<PermissionType> for ProtobufPermissionType {
             },
             PermissionType::Reconfigure => Ok(ProtobufPermissionType::Reconfigure),
             PermissionType::FullHdAccess => Ok(ProtobufPermissionType::FullHdAccess),
+            PermissionType::StartWebServer => Ok(ProtobufPermissionType::StartWebServer),
             PermissionType::InterceptInput => Ok(ProtobufPermissionType::InterceptInput),
+            PermissionType::ReadPaneContents => Ok(ProtobufPermissionType::ReadPaneContents),
+            PermissionType::RunActionsAsUser => Ok(ProtobufPermissionType::RunActionsAsUser),
+            PermissionType::WriteToClipboard => Ok(ProtobufPermissionType::WriteToClipboard),
         }
     }
 }

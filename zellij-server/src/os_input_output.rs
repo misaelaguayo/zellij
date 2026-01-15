@@ -387,9 +387,14 @@ impl ClientSender {
         std::thread::spawn(move || {
             let err_context = || format!("failed to send message to client {client_id}");
             for msg in client_buffer_receiver.iter() {
-                sender.send(msg).with_context(err_context).non_fatal();
+                sender
+                    .send_server_msg(msg)
+                    .with_context(err_context)
+                    .non_fatal();
             }
-            let _ = sender.send(ServerToClientMsg::Exit(ExitReason::Disconnect));
+            let _ = sender.send_server_msg(ServerToClientMsg::Exit {
+                exit_reason: ExitReason::Disconnect,
+            });
         });
         ClientSender {
             client_id,
@@ -495,6 +500,8 @@ pub trait ServerOsApi: Send + Sync {
     fn kill(&self, pid: Pid) -> Result<()>;
     /// Terminate the process with process ID `pid`. (SIGKILL)
     fn force_kill(&self, pid: Pid) -> Result<()>;
+    /// Send SIGINT to the process with process ID `pid`
+    fn send_sigint(&self, pid: Pid) -> Result<()>;
     /// Returns a [`Box`] pointer to this [`ServerOsApi`] struct.
     fn box_clone(&self) -> Box<dyn ServerOsApi>;
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()>;
@@ -508,11 +515,11 @@ pub trait ServerOsApi: Send + Sync {
     /// Returns the current working directory for a given pid
     fn get_cwd(&self, pid: Pid) -> Option<PathBuf>;
     /// Returns the current working directory for multiple pids
-    fn get_cwds(&self, _pids: Vec<Pid>) -> HashMap<Pid, PathBuf> {
-        HashMap::new()
+    fn get_cwds(&self, _pids: Vec<Pid>) -> (HashMap<Pid, PathBuf>, HashMap<Pid, Vec<String>>) {
+        (HashMap::new(), HashMap::new())
     }
     /// Get a list of all running commands by their parent process id
-    fn get_all_cmds_by_ppid(&self) -> HashMap<String, Vec<String>> {
+    fn get_all_cmds_by_ppid(&self, _post_hook: &Option<String>) -> HashMap<String, Vec<String>> {
         HashMap::new()
     }
     /// Writes the given buffer to a string
@@ -692,6 +699,10 @@ impl ServerOsApi for ServerOsInputOutput {
         let _ = kill(pid, Some(Signal::SIGKILL));
         Ok(())
     }
+    fn send_sigint(&self, pid: Pid) -> Result<()> {
+        let _ = kill(pid, Some(Signal::SIGINT));
+        Ok(())
+    }
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         let err_context = || format!("failed to send message to client {client_id}");
 
@@ -755,9 +766,10 @@ impl ServerOsApi for ServerOsInputOutput {
         None
     }
 
-    fn get_cwds(&self, pids: Vec<Pid>) -> HashMap<Pid, PathBuf> {
+    fn get_cwds(&self, pids: Vec<Pid>) -> (HashMap<Pid, PathBuf>, HashMap<Pid, Vec<String>>) {
         let mut system_info = System::new();
         let mut cwds = HashMap::new();
+        let mut cmds = HashMap::new();
 
         for pid in pids {
             // Update by minimizing information.
@@ -767,17 +779,22 @@ impl ServerOsApi for ServerOsInputOutput {
             if is_found {
                 if let Some(process) = system_info.process(pid.into()) {
                     let cwd = process.cwd();
+                    let cmd = process.cmd();
                     let cwd_is_empty = cwd.iter().next().is_none();
                     if !cwd_is_empty {
                         cwds.insert(pid, process.cwd().to_path_buf());
+                    }
+                    let cmd_is_empty = cmd.iter().next().is_none();
+                    if !cmd_is_empty {
+                        cmds.insert(pid, process.cmd().to_vec());
                     }
                 }
             }
         }
 
-        cwds
+        (cwds, cmds)
     }
-    fn get_all_cmds_by_ppid(&self) -> HashMap<String, Vec<String>> {
+    fn get_all_cmds_by_ppid(&self, post_hook: &Option<String>) -> HashMap<String, Vec<String>> {
         // the key is the stringified ppid
         let mut cmds = HashMap::new();
         if let Some(output) = Command::new("ps")
@@ -796,7 +813,28 @@ impl ServerOsApi for ServerOsInputOutput {
                 let mut line_parts = line_parts.into_iter();
                 let ppid = line_parts.next();
                 if let Some(ppid) = ppid {
-                    cmds.insert(ppid.into(), line_parts.collect());
+                    match &post_hook {
+                        Some(post_hook) => {
+                            let command: Vec<String> = line_parts.clone().collect();
+                            let stringified = command.join(" ");
+                            let cmd = match run_command_hook(&stringified, post_hook) {
+                                Ok(command) => command,
+                                Err(e) => {
+                                    log::error!("Post command hook failed to run: {}", e);
+                                    stringified.to_owned()
+                                },
+                            };
+                            let line_parts: Vec<String> = cmd
+                                .trim()
+                                .split_ascii_whitespace()
+                                .map(|p| p.to_owned())
+                                .collect();
+                            cmds.insert(ppid.into(), line_parts);
+                        },
+                        None => {
+                            cmds.insert(ppid.into(), line_parts.collect());
+                        },
+                    }
                 }
             }
         }
@@ -928,6 +966,22 @@ pub struct ChildId {
     /// Process id of the command running inside the forked terminal, usually a shell. The primary
     /// field is it's parent process id.
     pub shell: Option<Pid>,
+}
+
+fn run_command_hook(
+    original_command: &str,
+    hook_script: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(hook_script)
+        .env("RESURRECT_COMMAND", original_command)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(format!("Hook failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
 #[cfg(test)]
