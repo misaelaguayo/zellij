@@ -177,10 +177,6 @@ pub struct KittyApcParser {
 }
 
 impl KittyApcParser {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Check if currently parsing an APC sequence
     pub fn is_parsing(&self) -> bool {
         self.state != ApcParseState::Ground
@@ -368,10 +364,6 @@ pub struct KittyImageStore {
 }
 
 impl KittyImageStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Store a new image
     pub fn store_image(&mut self, image: KittyImage) {
         let id = image.id;
@@ -389,31 +381,15 @@ impl KittyImageStore {
     }
 
     /// Delete images based on delete type
-    pub fn delete(&mut self, delete_type: char, id: Option<u32>, _placement_id: Option<u32>) {
+    pub fn delete(&mut self, delete_type: char, id: Option<u32>) {
         match delete_type {
-            'a' | 'A' => {
-                // Delete all images
-                self.images.clear();
-            }
+            'a' | 'A' => self.images.clear(),
             'i' | 'I' => {
-                // Delete image with specific ID
                 if let Some(id) = id {
                     self.images.remove(&id);
                 }
             }
-            'n' | 'N' => {
-                // Delete newest image (not implemented - would need ordering)
-            }
-            'p' | 'P' => {
-                // Delete by placement ID (handled at placement level)
-            }
-            'c' | 'C' => {
-                // Delete images intersecting cursor position
-            }
-            'x' | 'X' | 'y' | 'Y' | 'z' | 'Z' => {
-                // Delete by column/row/z-index
-            }
-            _ => {}
+            _ => {} // Other delete types handled at placement level
         }
     }
 
@@ -499,8 +475,6 @@ fn extract_image_region(
 }
 
 /// Format RGBA data as a kitty graphics output command
-/// source_width/height are the actual pixel data dimensions
-/// display_width/height are the desired display dimensions (for scaling)
 fn format_kitty_output(
     image_id: u32,
     source_width: usize,
@@ -509,45 +483,25 @@ fn format_kitty_output(
     display_height: usize,
     rgba_data: &[u8],
 ) -> String {
-    let encoded = base64::encode(rgba_data);
-
-    // For large images, we need to chunk the output
-    // Kitty protocol allows up to 4096 bytes per chunk
     const CHUNK_SIZE: usize = 4096;
+    let encoded = base64::encode(rgba_data);
+    let total_chunks = (encoded.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
-    if encoded.len() <= CHUNK_SIZE {
-        // Single chunk
-        // s=source width, v=source height, w=display width, h=display height
-        format!(
-            "\x1b_Ga=T,f=32,s={},v={},w={},h={},i={};{}\x1b\\",
-            source_width, source_height, display_width, display_height, image_id, encoded
-        )
-    } else {
-        // Multiple chunks
-        let mut output = String::new();
-        let chunks: Vec<&str> = encoded
-            .as_bytes()
-            .chunks(CHUNK_SIZE)
-            .map(|c| std::str::from_utf8(c).unwrap_or(""))
-            .collect();
+    let mut output = String::new();
+    for (i, chunk) in encoded.as_bytes().chunks(CHUNK_SIZE).enumerate() {
+        let chunk_str = std::str::from_utf8(chunk).unwrap_or("");
+        let m = if i == total_chunks - 1 { 0 } else { 1 };
 
-        for (i, chunk) in chunks.iter().enumerate() {
-            let is_last = i == chunks.len() - 1;
-            let m = if is_last { 0 } else { 1 };
-
-            if i == 0 {
-                // First chunk includes image metadata
-                output.push_str(&format!(
-                    "\x1b_Ga=T,f=32,s={},v={},w={},h={},i={},m={};{}\x1b\\",
-                    source_width, source_height, display_width, display_height, image_id, m, chunk
-                ));
-            } else {
-                // Subsequent chunks
-                output.push_str(&format!("\x1b_Gm={};{}\x1b\\", m, chunk));
-            }
+        if i == 0 {
+            output.push_str(&format!(
+                "\x1b_Ga=T,f=32,s={},v={},w={},h={},i={},m={};{}\x1b\\",
+                source_width, source_height, display_width, display_height, image_id, m, chunk_str
+            ));
+        } else {
+            output.push_str(&format!("\x1b_Gm={};{}\x1b\\", m, chunk_str));
         }
-        output
     }
+    output
 }
 
 /// Main grid for managing kitty graphics
@@ -688,7 +642,14 @@ impl KittyGrid {
 
         // Create placement if requested
         if display {
-            self.create_placement(image_id, &image, &cmd.control, cursor_x_pixels, cursor_y_pixels);
+            self.create_placement(
+                image_id,
+                image.width,
+                image.height,
+                &cmd.control,
+                cursor_x_pixels,
+                cursor_y_pixels,
+            );
         }
 
         // Send response if not quiet
@@ -811,7 +772,8 @@ impl KittyGrid {
     fn create_placement(
         &mut self,
         image_id: u32,
-        image: &KittyImage,
+        image_width: usize,
+        image_height: usize,
         control: &KittyControlData,
         cursor_x_pixels: usize,
         cursor_y_pixels: usize,
@@ -825,22 +787,19 @@ impl KittyGrid {
         let pixel_x = control.display_x.unwrap_or(cursor_x_pixels);
         let pixel_y = control.display_y.unwrap_or(cursor_y_pixels) as isize;
 
-        // Calculate display dimensions, preferring pixel values but falling back to cell-based
         let character_cell_size = *self.character_cell_size.borrow();
-        let display_width = if let Some(w) = control.display_width {
-            w
-        } else if let (Some(cols), Some(cell_size)) = (control.columns, character_cell_size) {
-            cols * cell_size.width
-        } else {
-            image.width
-        };
-        let display_height = if let Some(h) = control.display_height {
-            h
-        } else if let (Some(rows), Some(cell_size)) = (control.rows, character_cell_size) {
-            rows * cell_size.height
-        } else {
-            image.height
-        };
+        let display_width = control.display_width.unwrap_or_else(|| {
+            control
+                .columns
+                .and_then(|cols| character_cell_size.map(|cs| cols * cs.width))
+                .unwrap_or(image_width)
+        });
+        let display_height = control.display_height.unwrap_or_else(|| {
+            control
+                .rows
+                .and_then(|rows| character_cell_size.map(|cs| rows * cs.height))
+                .unwrap_or(image_height)
+        });
         let z_index = control.z_index.unwrap_or(0);
 
         let placement = KittyPlacement {
@@ -868,11 +827,20 @@ impl KittyGrid {
         cursor_y_pixels: usize,
     ) -> Option<Vec<u8>> {
         let image_id = cmd.control.image_id?;
+        let (width, height) = {
+            let store = self.kitty_image_store.borrow();
+            let image = store.get_image(image_id)?;
+            (image.width, image.height)
+        };
 
-        // Check if image exists
-        let image = self.kitty_image_store.borrow().get_image(image_id)?.clone();
-
-        self.create_placement(image_id, &image, &cmd.control, cursor_x_pixels, cursor_y_pixels);
+        self.create_placement(
+            image_id,
+            width,
+            height,
+            &cmd.control,
+            cursor_x_pixels,
+            cursor_y_pixels,
+        );
 
         if cmd.control.quiet == 0 {
             let response = format!("\x1b_Gi={};OK\x1b\\", image_id);
@@ -956,11 +924,9 @@ impl KittyGrid {
         }
 
         // Also delete from image store (for operations that affect stored images)
-        self.kitty_image_store.borrow_mut().delete(
-            delete_type,
-            cmd.control.image_id,
-            cmd.control.placement_id,
-        );
+        self.kitty_image_store
+            .borrow_mut()
+            .delete(delete_type, cmd.control.image_id);
 
         None
     }
@@ -970,7 +936,7 @@ impl KittyGrid {
         &self,
         changed_rects: HashMap<usize, usize>,
         scrollback_size_in_lines: usize,
-        viewport_width_in_cells: usize,
+        _viewport_width_in_cells: usize,
         viewport_x_offset: usize,
         viewport_y_offset: usize,
     ) -> Vec<KittyImageChunk> {
@@ -1097,52 +1063,37 @@ impl KittyGrid {
         viewport_height: usize,
         scrollback_height: usize,
     ) -> Vec<(usize, usize, usize, usize)> {
-        match *self.character_cell_size.borrow() {
-            Some(character_cell_size) => self
-                .placements
-                .values()
-                .map(|placement| {
-                    let scrollback_size_in_pixels =
-                        scrollback_height * character_cell_size.height;
-                    let y_pixel_coordinates_in_viewport =
-                        placement.pixel_y - scrollback_size_in_pixels as isize;
-                    let image_y = std::cmp::max(y_pixel_coordinates_in_viewport, 0) as usize
-                        / character_cell_size.height;
-                    let image_x = placement.pixel_x / character_cell_size.width;
-                    let image_height_in_pixels = if y_pixel_coordinates_in_viewport < 0 {
-                        placement.display_height as isize + y_pixel_coordinates_in_viewport
-                    } else {
-                        placement.display_height as isize
-                    };
-                    let image_height =
-                        image_height_in_pixels as usize / character_cell_size.height;
-                    let image_width = placement.display_width / character_cell_size.width;
-                    let height_remainder =
-                        if image_height_in_pixels as usize % character_cell_size.height > 0 {
-                            1
-                        } else {
-                            0
-                        };
-                    let width_remainder = if placement.display_width % character_cell_size.width > 0
-                    {
-                        1
-                    } else {
-                        0
-                    };
-                    let image_top_edge = image_y;
-                    let image_bottom_edge =
-                        std::cmp::min(image_y + image_height + height_remainder, viewport_height);
-                    let image_left_edge = image_x;
-                    let image_right_edge = image_x + image_width + width_remainder;
-                    (
-                        image_top_edge,
-                        image_bottom_edge,
-                        image_left_edge,
-                        image_right_edge,
-                    )
-                })
-                .collect(),
-            None => vec![],
-        }
+        let Some(cell_size) = *self.character_cell_size.borrow() else {
+            return vec![];
+        };
+
+        self.placements
+            .values()
+            .map(|placement| {
+                let scrollback_pixels = (scrollback_height * cell_size.height) as isize;
+                let y_in_viewport = placement.pixel_y - scrollback_pixels;
+
+                let image_y = y_in_viewport.max(0) as usize / cell_size.height;
+                let image_x = placement.pixel_x / cell_size.width;
+
+                let visible_height = if y_in_viewport < 0 {
+                    (placement.display_height as isize + y_in_viewport).max(0) as usize
+                } else {
+                    placement.display_height
+                };
+
+                let cells_high =
+                    (visible_height + cell_size.height - 1) / cell_size.height;
+                let cells_wide =
+                    (placement.display_width + cell_size.width - 1) / cell_size.width;
+
+                (
+                    image_y,
+                    (image_y + cells_high).min(viewport_height),
+                    image_x,
+                    image_x + cells_wide,
+                )
+            })
+            .collect()
     }
 }

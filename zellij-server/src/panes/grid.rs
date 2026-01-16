@@ -547,7 +547,7 @@ impl Grid {
             search_results: Default::default(),
             sixel_grid,
             kitty_grid,
-            kitty_apc_parser: KittyApcParser::new(),
+            kitty_apc_parser: KittyApcParser::default(),
             pending_clipboard_update: None,
             ui_component_bytes: None,
             style,
