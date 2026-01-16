@@ -4,4 +4,8 @@ target/
 .vim
 .idea
 .DS_Store
+.direnv/
+.envrc
+flake.lock
+flake.nix
 /assets/man/zellij.1
