@@ -2119,6 +2119,17 @@ impl Grid {
     }
     /// Handle a kitty graphics command
     pub fn handle_kitty_command(&mut self, cmd: super::kitty_graphics::KittyCommand) {
+        use super::kitty_graphics::KittyAction;
+
+        // Query commands don't need pixel coordinates, always handle them
+        if cmd.control.action == KittyAction::Query {
+            if let Some(response) = self.kitty_grid.handle_command(cmd, 0, 0) {
+                self.pending_messages_to_pty.push(response);
+            }
+            return;
+        }
+
+        // Other commands need pixel coordinates for placement
         if let Some((x_pixels, y_pixels)) = self.current_cursor_pixel_coordinates() {
             if let Some(response) = self.kitty_grid.handle_command(cmd, x_pixels, y_pixels) {
                 self.pending_messages_to_pty.push(response);
