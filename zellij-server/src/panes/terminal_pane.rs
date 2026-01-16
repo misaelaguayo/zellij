@@ -1,4 +1,5 @@
-use crate::output::{CharacterChunk, SixelImageChunk};
+use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
+use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
 use crate::panes::{
@@ -192,9 +193,29 @@ impl Pane for TerminalPane {
         self.reflow_lines();
     }
     fn handle_pty_bytes(&mut self, bytes: VteBytes) {
+        use crate::panes::kitty_graphics::ApcAdvanceResult;
         self.set_should_render(true);
         for &byte in &bytes {
-            self.vte_parser.advance(&mut self.grid, byte);
+            // Intercept APC sequences for kitty graphics before VTE
+            match self.grid.kitty_apc_parser.advance(byte) {
+                ApcAdvanceResult::Continue => {
+                    // APC parser consumed the byte, don't send to VTE
+                }
+                ApcAdvanceResult::Complete(cmd) => {
+                    // Process the kitty graphics command
+                    self.grid.handle_kitty_command(cmd);
+                }
+                ApcAdvanceResult::NotApc(buffered) => {
+                    // Not an APC sequence, forward buffered bytes to VTE
+                    for b in buffered {
+                        self.vte_parser.advance(&mut self.grid, b);
+                    }
+                }
+                ApcAdvanceResult::Error => {
+                    // Parse error, reset parser state
+                    self.grid.kitty_apc_parser.reset();
+                }
+            }
         }
     }
     fn cursor_coordinates(&self, _client_id: Option<ClientId>) -> Option<(usize, usize)> {
@@ -310,7 +331,7 @@ impl Pane for TerminalPane {
     fn render(
         &mut self,
         _client_id: Option<ClientId>,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>)>> {
+    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>, Vec<KittyImageChunk>)>> {
         if self.should_render() {
             let content_x = self.get_content_x();
             let content_y = self.get_content_y();
@@ -929,6 +950,7 @@ impl TerminalPane {
         link_handler: Rc<RefCell<LinkHandler>>,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         sixel_image_store: Rc<RefCell<SixelImageStore>>,
+        kitty_image_store: Rc<RefCell<KittyImageStore>>,
         terminal_emulator_colors: Rc<RefCell<Palette>>,
         terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
         initial_pane_title: Option<String>,
@@ -949,6 +971,7 @@ impl TerminalPane {
             link_handler,
             character_cell_size,
             sixel_image_store,
+            kitty_image_store,
             style.clone(),
             debug,
             arrow_fonts,

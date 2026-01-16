@@ -1,9 +1,10 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
 
-use crate::output::{CharacterChunk, SixelImageChunk};
+use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::{
     grid::Grid,
+    kitty_graphics::KittyImageStore,
     sixel::SixelImageStore,
     terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END},
     LinkHandler, PaneId,
@@ -59,6 +60,7 @@ macro_rules! get_or_create_grid {
                 $self.link_handler.clone(),
                 $self.character_cell_size.clone(),
                 $self.sixel_image_store.clone(),
+                $self.kitty_image_store.clone(),
                 $self.style.clone(),
                 $self.debug,
                 $self.arrow_fonts,
@@ -84,6 +86,7 @@ pub(crate) struct PluginPane {
     pub pane_name: String,
     pub style: Style,
     sixel_image_store: Rc<RefCell<SixelImageStore>>,
+    kitty_image_store: Rc<RefCell<KittyImageStore>>,
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
     link_handler: Rc<RefCell<LinkHandler>>,
@@ -115,6 +118,7 @@ impl PluginPane {
         title: String,
         pane_name: String,
         sixel_image_store: Rc<RefCell<SixelImageStore>>,
+        kitty_image_store: Rc<RefCell<KittyImageStore>>,
         terminal_emulator_colors: Rc<RefCell<Palette>>,
         terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
         link_handler: Rc<RefCell<LinkHandler>>,
@@ -148,6 +152,7 @@ impl PluginPane {
             link_handler,
             character_cell_size,
             sixel_image_store,
+            kitty_image_store,
             vte_parsers: HashMap::new(),
             grids: HashMap::new(),
             cursor_visibility: HashMap::new(),
@@ -391,7 +396,7 @@ impl Pane for PluginPane {
     fn render(
         &mut self,
         client_id: Option<ClientId>,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>)>> {
+    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>, Vec<KittyImageChunk>)>> {
         if client_id.is_none() {
             return Ok(None);
         }

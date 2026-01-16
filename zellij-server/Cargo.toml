@@ -40,6 +40,8 @@ serde_json = { workspace = true }
 signal-hook = { workspace = true }
 sixel-image = { version = "0.1.0", default-features = false }
 sixel-tokenizer = { version = "0.1.0", default-features = false }
+image = { version = "0.24", default-features = false, features = ["png"] }
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
 sysinfo = { version = "0.22.5", default-features = false }
 tempfile = { workspace = true }
 typetag = { version = "0.1.7", default-features = false }

@@ -29,7 +29,7 @@ use zellij_utils::{
     envs::set_session_name,
     input::command::TerminalAction,
     input::layout::{
-        FloatingPaneLayout, Layout, PercentOrFixed, Run, RunPluginOrAlias, SwapFloatingLayout,
+        FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SplitSize, SwapFloatingLayout,
         SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
     },
     position::Position,
@@ -46,6 +46,7 @@ use crate::session_layout_metadata::{PaneLayoutMetadata, SessionLayoutMetadata};
 use crate::{
     output::Output,
     panes::sixel::SixelImageStore,
+    panes::kitty_graphics::KittyImageStore,
     panes::PaneId,
     plugins::{DumpSessionLayoutResponse, PluginId, PluginInstruction, PluginRenderAsset},
     pty::{get_default_shell, ClientTabIndexOrPaneId, PtyInstruction, VteBytes},
@@ -892,6 +893,7 @@ pub(crate) struct Screen {
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     stacked_resize: Rc<RefCell<bool>>,
     sixel_image_store: Rc<RefCell<SixelImageStore>>,
+    kitty_image_store: Rc<RefCell<KittyImageStore>>,
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
     connected_clients: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
@@ -981,6 +983,7 @@ impl Screen {
             character_cell_size: Rc::new(RefCell::new(None)),
             stacked_resize: Rc::new(RefCell::new(stacked_resize)),
             sixel_image_store: Rc::new(RefCell::new(SixelImageStore::default())),
+            kitty_image_store: Rc::new(RefCell::new(KittyImageStore::default())),
             style: client_attributes.style,
             connected_clients: Rc::new(RefCell::new(HashMap::new())),
             active_tab_indices: BTreeMap::new(),
@@ -1510,6 +1513,7 @@ impl Screen {
         if has_regular_clients {
             let mut output = Output::new(
                 self.sixel_image_store.clone(),
+                self.kitty_image_store.clone(),
                 self.character_cell_size.clone(),
                 self.styled_underlines,
             );
@@ -1555,6 +1559,7 @@ impl Screen {
                 // Create fresh output for watchers
                 let mut watcher_output = Output::new(
                     self.sixel_image_store.clone(),
+                    self.kitty_image_store.clone(),
                     self.character_cell_size.clone(),
                     self.styled_underlines,
                 );
@@ -1723,6 +1728,7 @@ impl Screen {
             self.character_cell_size.clone(),
             self.stacked_resize.clone(),
             self.sixel_image_store.clone(),
+            self.kitty_image_store.clone(),
             self.bus
                 .os_input
                 .as_ref()
@@ -2898,10 +2904,10 @@ impl Screen {
                 let pane_id = pane.pid();
                 if pane_was_floating {
                     let floating_pane_coordinates = FloatingPaneCoordinates {
-                        x: Some(PercentOrFixed::Fixed(pane.x())),
-                        y: Some(PercentOrFixed::Fixed(pane.y())),
-                        width: Some(PercentOrFixed::Fixed(pane.cols())),
-                        height: Some(PercentOrFixed::Fixed(pane.rows())),
+                        x: Some(SplitSize::Fixed(pane.x())),
+                        y: Some(SplitSize::Fixed(pane.y())),
+                        width: Some(SplitSize::Fixed(pane.cols())),
+                        height: Some(SplitSize::Fixed(pane.rows())),
                         pinned: Some(pane.current_geom().is_pinned),
                     };
                     new_active_tab.add_floating_pane(

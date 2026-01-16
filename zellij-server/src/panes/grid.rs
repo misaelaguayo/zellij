@@ -1,3 +1,4 @@
+use super::kitty_graphics::{KittyApcParser, KittyGrid, KittyImageStore};
 use super::sixel::{PixelRect, SixelGrid, SixelImageStore};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -28,7 +29,7 @@ pub const MAX_TITLE_STACK_SIZE: usize = 1000;
 use vte::{Params, Perform};
 use zellij_utils::{consts::VERSION, shared::version_number};
 
-use crate::output::{CharacterChunk, OutputBuffer, SixelImageChunk};
+use crate::output::{CharacterChunk, KittyImageChunk, OutputBuffer, SixelImageChunk};
 use crate::panes::alacritty_functions::{parse_number, xparse_color};
 use crate::panes::hyperlink_tracker::HyperlinkTracker;
 use crate::panes::link_handler::LinkHandler;
@@ -329,6 +330,8 @@ pub struct Grid {
     title_stack: Vec<String>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     sixel_grid: SixelGrid,
+    kitty_grid: KittyGrid,
+    pub kitty_apc_parser: KittyApcParser,
     pub changed_colors: Option<[Option<AnsiCode>; 256]>,
     pub should_render: bool,
     pub lock_renders: bool,
@@ -488,6 +491,7 @@ impl Grid {
         link_handler: Rc<RefCell<LinkHandler>>,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         sixel_image_store: Rc<RefCell<SixelImageStore>>,
+        kitty_image_store: Rc<RefCell<KittyImageStore>>,
         style: Style, // TODO: consolidate this with terminal_emulator_colors
         debug: bool,
         arrow_fonts: bool,
@@ -495,6 +499,7 @@ impl Grid {
         explicitly_disable_kitty_keyboard_protocol: bool,
     ) -> Self {
         let sixel_grid = SixelGrid::new(character_cell_size.clone(), sixel_image_store);
+        let kitty_grid = KittyGrid::new(character_cell_size.clone(), kitty_image_store);
         // make sure this is initialized as it is used internally
         // if it was already initialized (which should happen normally unless this is a test or
         // something changed since this comment was written), we get an Error which we ignore
@@ -541,6 +546,8 @@ impl Grid {
             character_cell_size,
             search_results: Default::default(),
             sixel_grid,
+            kitty_grid,
+            kitty_apc_parser: KittyApcParser::new(),
             pending_clipboard_update: None,
             ui_component_bytes: None,
             style,
@@ -1067,7 +1074,7 @@ impl Grid {
         &mut self,
         x_offset: usize,
         y_offset: usize,
-    ) -> (Vec<CharacterChunk>, Vec<SixelImageChunk>) {
+    ) -> (Vec<CharacterChunk>, Vec<SixelImageChunk>, Vec<KittyImageChunk>) {
         let changed_character_chunks = self.output_buffer.changed_chunks_in_viewport(
             &self.viewport,
             self.width,
@@ -1079,6 +1086,13 @@ impl Grid {
             .output_buffer
             .changed_rects_in_viewport(self.viewport.len());
         let changed_sixel_image_chunks = self.sixel_grid.changed_sixel_chunks_in_viewport(
+            changed_rects.clone(),
+            self.lines_above.len(),
+            self.width,
+            x_offset,
+            y_offset,
+        );
+        let changed_kitty_image_chunks = self.kitty_grid.changed_kitty_chunks_in_viewport(
             changed_rects,
             self.lines_above.len(),
             self.width,
@@ -1090,7 +1104,7 @@ impl Grid {
         }
         self.output_buffer.clear();
 
-        (changed_character_chunks, changed_sixel_image_chunks)
+        (changed_character_chunks, changed_sixel_image_chunks, changed_kitty_image_chunks)
     }
     pub fn serialize(&self, scrollback_lines_to_serialize: Option<usize>) -> Option<String> {
         match scrollback_lines_to_serialize {
@@ -1121,13 +1135,13 @@ impl Grid {
         content_x: usize,
         content_y: usize,
         style: &Style,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>)>> {
+    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>, Vec<KittyImageChunk>)>> {
         if self.lock_renders {
             return Ok(None);
         }
         let mut raw_vte_output = String::new();
 
-        let (mut character_chunks, sixel_image_chunks) = self.read_changes(content_x, content_y);
+        let (mut character_chunks, sixel_image_chunks, kitty_image_chunks) = self.read_changes(content_x, content_y);
         for character_chunk in character_chunks.iter_mut() {
             character_chunk.add_changed_colors(self.changed_colors);
             if self
@@ -1193,6 +1207,7 @@ impl Grid {
             character_chunks,
             Some(raw_vte_output),
             sixel_image_chunks,
+            kitty_image_chunks,
         )));
     }
     pub fn cursor_coordinates(&self) -> Option<(usize, usize)> {
@@ -2100,6 +2115,15 @@ impl Grid {
                 }
                 self.render_full_viewport(); // TODO: this could be optimized if it's a performance bottleneck
             }
+        }
+    }
+    /// Handle a kitty graphics command
+    pub fn handle_kitty_command(&mut self, cmd: super::kitty_graphics::KittyCommand) {
+        if let Some((x_pixels, y_pixels)) = self.current_cursor_pixel_coordinates() {
+            if let Some(response) = self.kitty_grid.handle_command(cmd, x_pixels, y_pixels) {
+                self.pending_messages_to_pty.push(response);
+            }
+            self.render_full_viewport();
         }
     }
     fn mouse_buttons_value_x10(&self, event: &MouseEvent) -> u8 {
