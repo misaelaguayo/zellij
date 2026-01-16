@@ -355,7 +355,7 @@ fn parse_control_data(data: &[u8]) -> Result<KittyControlData, ()> {
     Ok(control)
 }
 
-/// Image store for kitty graphics (parallel to SixelImageStore)
+/// Image store for kitty graphics
 pub type KittyImageCache = HashMap<PixelRect, Vec<u8>>;
 
 #[derive(Debug, Clone, Default)]
