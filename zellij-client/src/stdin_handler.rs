@@ -6,6 +6,60 @@ use std::sync::{Arc, Mutex};
 use termwiz::input::{InputEvent, InputParser, MouseButtons};
 use zellij_utils::channels::SenderWithContext;
 
+/// Filter out kitty graphics responses from stdin buffer
+/// These responses come from the parent terminal emulator when zellij sends kitty graphics
+/// Format: \x1b_Gi=<id>;OK\x1b\\ or \x1b_Gi=<id>;E<error>\x1b\\
+fn filter_kitty_graphics_responses(buf: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(buf.len());
+    let mut i = 0;
+
+    while i < buf.len() {
+        // Look for ESC _ G (kitty graphics APC start)
+        if i + 2 < buf.len() && buf[i] == 0x1b && buf[i + 1] == b'_' && buf[i + 2] == b'G' {
+            // Found potential kitty graphics sequence, find the end
+            let start = i;
+            i += 3; // Skip ESC _ G
+
+            // Find the string terminator (ESC \)
+            let mut found_end = false;
+            while i + 1 < buf.len() {
+                if buf[i] == 0x1b && buf[i + 1] == b'\\' {
+                    // Found the end - check if this looks like a response (contains ;OK or ;E)
+                    let sequence = &buf[start..i + 2];
+                    let seq_str = String::from_utf8_lossy(sequence);
+                    if seq_str.contains(";OK") || seq_str.contains(";ENOENT") ||
+                       seq_str.contains(";EINVAL") || seq_str.contains(";EBADF") ||
+                       (seq_str.contains(";E") && sequence.len() < 50) {
+                        // This is a kitty graphics response, skip it entirely
+                        log::debug!("Filtering kitty graphics response from stdin: {:?}", seq_str);
+                        i += 2; // Skip ESC \
+                        found_end = true;
+                        break;
+                    } else {
+                        // Not a response, keep it
+                        result.extend_from_slice(sequence);
+                        i += 2;
+                        found_end = true;
+                        break;
+                    }
+                }
+                i += 1;
+            }
+
+            if !found_end {
+                // Incomplete sequence, keep it for now
+                result.extend_from_slice(&buf[start..]);
+                break;
+            }
+        } else {
+            result.push(buf[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
 fn send_done_parsing_after_query_timeout(
     send_input_instructions: SenderWithContext<InputInstruction>,
     query_duration: u64,
@@ -63,6 +117,12 @@ pub(crate) fn stdin_loop(
     loop {
         match os_input.read_from_stdin() {
             Ok(buf) => {
+                // Filter out kitty graphics responses from parent terminal before processing
+                let buf = filter_kitty_graphics_responses(&buf);
+                if buf.is_empty() {
+                    continue; // All bytes were filtered out
+                }
+
                 {
                     // here we check if we need to parse specialized ANSI instructions sent over STDIN
                     // this happens either on startup (see above) or on SIGWINCH
@@ -71,7 +131,7 @@ pub(crate) fn stdin_loop(
                     // receive on STDIN during that timeout is unceremoniously dropped
                     let mut stdin_ansi_parser = stdin_ansi_parser.lock().unwrap();
                     if stdin_ansi_parser.should_parse() {
-                        let events = stdin_ansi_parser.parse(buf);
+                        let events = stdin_ansi_parser.parse(buf.clone());
                         if !events.is_empty() {
                             ansi_stdin_events.append(&mut events.clone());
                             let _ = send_input_instructions
