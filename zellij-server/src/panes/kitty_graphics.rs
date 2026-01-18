@@ -1011,16 +1011,15 @@ impl KittyGrid {
         });
         log::debug!("Kitty: Assigned placement_id={}", placement_id);
 
-        let pixel_x = control.display_x.unwrap_or(cursor_x_pixels);
-        let pixel_y = control.display_y.unwrap_or(cursor_y_pixels) as isize;
+        // Position is always at cursor position
+        // Note: control.display_x and display_y (x= and y=) are for SOURCE image cropping offset,
+        // not for positioning. The image position is determined by cursor position.
+        let pixel_x = cursor_x_pixels;
+        let pixel_y = cursor_y_pixels as isize;
         log::debug!(
-            "Kitty: Placement position - pixel_x={} (display_x={:?}, cursor={}), pixel_y={} (display_y={:?}, cursor={})",
+            "Kitty: Placement position - pixel_x={}, pixel_y={} (cursor position)",
             pixel_x,
-            control.display_x,
-            cursor_x_pixels,
-            pixel_y,
-            control.display_y,
-            cursor_y_pixels
+            pixel_y
         );
 
         let character_cell_size = *self.character_cell_size.borrow();
