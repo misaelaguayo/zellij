@@ -270,9 +270,29 @@ impl KittyApcParser {
         let payload = std::mem::take(&mut self.payload_buffer);
         self.state = ApcParseState::Ground;
 
+        log::debug!(
+            "Kitty APC: Finalizing command - control_len={}, payload_len={}",
+            control_bytes.len(),
+            payload.len()
+        );
+
         match parse_control_data(&control_bytes) {
-            Ok(control) => ApcAdvanceResult::Complete(KittyCommand { control, payload }),
-            Err(_) => ApcAdvanceResult::Error,
+            Ok(control) => {
+                log::debug!(
+                    "Kitty APC: Parsed control data - action={:?}, format={:?}, image_id={:?}",
+                    control.action,
+                    control.format,
+                    control.image_id
+                );
+                ApcAdvanceResult::Complete(KittyCommand { control, payload })
+            }
+            Err(_) => {
+                log::warn!(
+                    "Kitty APC: Failed to parse control data: {:?}",
+                    String::from_utf8_lossy(&control_bytes)
+                );
+                ApcAdvanceResult::Error
+            }
         }
     }
 
@@ -404,7 +424,22 @@ impl KittyImageStore {
         pixel_width: usize,
         pixel_height: usize,
     ) -> Option<String> {
-        let (image, cache) = self.images.get_mut(&image_id)?;
+        log::debug!(
+            "Kitty: Serializing image - id={}, offset=({}, {}), size={}x{}",
+            image_id,
+            pixel_x,
+            pixel_y,
+            pixel_width,
+            pixel_height
+        );
+
+        let (image, cache) = match self.images.get_mut(&image_id) {
+            Some(data) => data,
+            None => {
+                log::warn!("Kitty: Cannot serialize - image_id={} not found in store", image_id);
+                return None;
+            }
+        };
 
         let cache_key = PixelRect::new(pixel_x, pixel_y, pixel_height, pixel_width);
 
@@ -548,6 +583,12 @@ impl KittyGrid {
         cursor_x_pixels: usize,
         cursor_y_pixels: usize,
     ) -> Option<Vec<u8>> {
+        log::debug!(
+            "Kitty: Handling command - action={:?}, cursor_pos=({}, {})",
+            cmd.control.action,
+            cursor_x_pixels,
+            cursor_y_pixels
+        );
         match cmd.control.action {
             KittyAction::Query => self.handle_query(&cmd),
             KittyAction::Transmit => self.handle_transmit(cmd, false, cursor_x_pixels, cursor_y_pixels),
@@ -555,18 +596,21 @@ impl KittyGrid {
             KittyAction::Put => self.handle_put(&cmd, cursor_x_pixels, cursor_y_pixels),
             KittyAction::Delete => self.handle_delete(&cmd),
             KittyAction::Frame | KittyAction::Animation | KittyAction::Compose => {
-                // Animation features not yet implemented
+                log::debug!("Kitty: Animation features not yet implemented");
                 None
             }
         }
     }
 
     fn handle_query(&self, cmd: &KittyCommand) -> Option<Vec<u8>> {
+        log::debug!("Kitty: Handling query command, image_id={:?}", cmd.control.image_id);
         // Respond that we support kitty graphics
         if cmd.control.quiet == 0 {
             let response = format!("\x1b_Gi={};OK\x1b\\", cmd.control.image_id.unwrap_or(0));
+            log::debug!("Kitty: Sending query response OK");
             Some(response.into_bytes())
         } else {
+            log::debug!("Kitty: Query in quiet mode, no response sent");
             None
         }
     }
@@ -578,12 +622,20 @@ impl KittyGrid {
         cursor_x_pixels: usize,
         cursor_y_pixels: usize,
     ) -> Option<Vec<u8>> {
+        log::debug!(
+            "Kitty: Handling transmit - display={}, more_data={}, payload_len={}",
+            display,
+            cmd.control.more_data,
+            cmd.payload.len()
+        );
         if cmd.control.more_data {
             // Accumulate chunk
+            log::debug!("Kitty: Accumulating chunk (more data expected)");
             self.accumulate_chunk(cmd);
             None
         } else {
             // Finalize transmission
+            log::debug!("Kitty: Finalizing transmission");
             let final_cmd = self.finalize_transmission(cmd);
             self.process_complete_transmission(final_cmd, display, cursor_x_pixels, cursor_y_pixels)
         }
@@ -622,8 +674,29 @@ impl KittyGrid {
         cursor_x_pixels: usize,
         cursor_y_pixels: usize,
     ) -> Option<Vec<u8>> {
+        log::debug!(
+            "Kitty: Processing complete transmission - format={:?}, transmission={:?}, payload_len={}",
+            cmd.control.format,
+            cmd.control.transmission,
+            cmd.payload.len()
+        );
+
         // Decode the image
-        let image = self.decode_image(&cmd)?;
+        let image = match self.decode_image(&cmd) {
+            Some(img) => {
+                log::debug!(
+                    "Kitty: Image decoded successfully - width={}, height={}, pixel_data_len={}",
+                    img.width,
+                    img.height,
+                    img.pixel_data.len()
+                );
+                img
+            }
+            None => {
+                log::warn!("Kitty: Failed to decode image");
+                return None;
+            }
+        };
 
         // Assign ID
         let image_id = cmd.control.image_id.unwrap_or_else(|| {
@@ -631,6 +704,7 @@ impl KittyGrid {
             self.next_image_id += 1;
             id
         });
+        log::debug!("Kitty: Assigned image_id={}", image_id);
 
         let image = KittyImage {
             id: image_id,
@@ -638,10 +712,21 @@ impl KittyGrid {
         };
 
         // Store the image
+        log::debug!(
+            "Kitty: Storing image - id={}, dimensions={}x{}",
+            image_id,
+            image.width,
+            image.height
+        );
         self.kitty_image_store.borrow_mut().store_image(image.clone());
+        log::debug!(
+            "Kitty: Image store now contains {} images",
+            self.kitty_image_store.borrow().image_count()
+        );
 
         // Create placement if requested
         if display {
+            log::debug!("Kitty: Creating placement for image_id={}", image_id);
             self.create_placement(
                 image_id,
                 image.width,
@@ -655,36 +740,104 @@ impl KittyGrid {
         // Send response if not quiet
         if cmd.control.quiet == 0 {
             let response = format!("\x1b_Gi={};OK\x1b\\", image_id);
+            log::debug!("Kitty: Sending transmit response OK for image_id={}", image_id);
             Some(response.into_bytes())
         } else {
+            log::debug!("Kitty: Transmit in quiet mode, no response sent");
             None
         }
     }
 
     fn decode_image(&self, cmd: &KittyCommand) -> Option<KittyImage> {
+        log::debug!(
+            "Kitty: Decoding image - format={:?}, transmission={:?}, compression={:?}",
+            cmd.control.format,
+            cmd.control.transmission,
+            cmd.control.compression
+        );
+
         // Get raw data based on transmission medium
         let raw_data = match cmd.control.transmission {
             TransmissionMedium::Direct => {
                 // Direct: payload is base64-encoded image data
-                base64::decode(&cmd.payload).ok()?
+                log::debug!("Kitty: Decoding base64 payload (direct transmission)");
+                match base64::decode(&cmd.payload) {
+                    Ok(data) => {
+                        log::debug!("Kitty: Base64 decoded {} bytes", data.len());
+                        data
+                    }
+                    Err(e) => {
+                        log::warn!("Kitty: Failed to decode base64 payload: {:?}", e);
+                        return None;
+                    }
+                }
             }
             TransmissionMedium::File => {
                 // File: payload is base64-encoded file path
-                let path_bytes = base64::decode(&cmd.payload).ok()?;
-                let path = std::str::from_utf8(&path_bytes).ok()?;
-                std::fs::read(path).ok()?
+                let path_bytes = match base64::decode(&cmd.payload) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        log::warn!("Kitty: Failed to decode file path from base64: {:?}", e);
+                        return None;
+                    }
+                };
+                let path = match std::str::from_utf8(&path_bytes) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!("Kitty: Invalid UTF-8 in file path: {:?}", e);
+                        return None;
+                    }
+                };
+                log::debug!("Kitty: Reading image from file: {}", path);
+                match std::fs::read(path) {
+                    Ok(data) => {
+                        log::debug!("Kitty: Read {} bytes from file", data.len());
+                        data
+                    }
+                    Err(e) => {
+                        log::warn!("Kitty: Failed to read file '{}': {:?}", path, e);
+                        return None;
+                    }
+                }
             }
             TransmissionMedium::TempFile => {
                 // TempFile: payload is base64-encoded file path, delete after reading
-                let path_bytes = base64::decode(&cmd.payload).ok()?;
-                let path = std::str::from_utf8(&path_bytes).ok()?;
-                let data = std::fs::read(path).ok()?;
+                let path_bytes = match base64::decode(&cmd.payload) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        log::warn!("Kitty: Failed to decode temp file path from base64: {:?}", e);
+                        return None;
+                    }
+                };
+                let path = match std::str::from_utf8(&path_bytes) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!("Kitty: Invalid UTF-8 in temp file path: {:?}", e);
+                        return None;
+                    }
+                };
+                log::debug!("Kitty: Reading image from temp file: {}", path);
+                let data = match std::fs::read(path) {
+                    Ok(d) => {
+                        log::debug!("Kitty: Read {} bytes from temp file", d.len());
+                        d
+                    }
+                    Err(e) => {
+                        log::warn!("Kitty: Failed to read temp file '{}': {:?}", path, e);
+                        return None;
+                    }
+                };
                 // Delete the temp file after reading
-                let _ = std::fs::remove_file(path);
+                if let Err(e) = std::fs::remove_file(path) {
+                    log::warn!("Kitty: Failed to delete temp file '{}': {:?}", path, e);
+                } else {
+                    log::debug!("Kitty: Deleted temp file: {}", path);
+                }
                 data
             }
             TransmissionMedium::SharedMemory => {
                 // Shared memory not supported yet
+                log::warn!("Kitty: Shared memory transmission not supported");
                 return None;
             }
         };
@@ -692,18 +845,22 @@ impl KittyGrid {
         // Handle compression if present
         let decompressed = match cmd.control.compression {
             Some('z') => {
+                log::debug!("Kitty: Decompressing zlib data ({} bytes)", raw_data.len());
                 // zlib decompression
                 let mut decoder = ZlibDecoder::new(&raw_data[..]);
                 let mut decompressed = Vec::new();
-                if decoder.read_to_end(&mut decompressed).is_err() {
+                if let Err(e) = decoder.read_to_end(&mut decompressed) {
+                    log::warn!("Kitty: Failed to decompress zlib data: {:?}", e);
                     return None;
                 }
+                log::debug!("Kitty: Decompressed to {} bytes", decompressed.len());
                 decompressed
             }
             _ => raw_data,
         };
 
         // Decode based on format
+        log::debug!("Kitty: Decoding image format {:?}", cmd.control.format);
         match cmd.control.format {
             KittyFormat::Png => self.decode_png(&decompressed),
             KittyFormat::Rgb24 => self.decode_rgb(&decompressed, &cmd.control),
@@ -712,11 +869,19 @@ impl KittyGrid {
     }
 
     fn decode_png(&self, data: &[u8]) -> Option<KittyImage> {
+        log::debug!("Kitty: Decoding PNG ({} bytes)", data.len());
         // Decode PNG using the image crate
-        let img = image::load_from_memory_with_format(data, ImageFormat::Png).ok()?;
+        let img = match image::load_from_memory_with_format(data, ImageFormat::Png) {
+            Ok(img) => img,
+            Err(e) => {
+                log::warn!("Kitty: Failed to decode PNG: {:?}", e);
+                return None;
+            }
+        };
         let rgba = img.to_rgba8();
         let width = rgba.width() as usize;
         let height = rgba.height() as usize;
+        log::debug!("Kitty: PNG decoded - dimensions={}x{}", width, height);
 
         Some(KittyImage {
             id: 0, // Will be assigned later
@@ -727,10 +892,35 @@ impl KittyGrid {
     }
 
     fn decode_rgb(&self, data: &[u8], control: &KittyControlData) -> Option<KittyImage> {
-        let width = control.width?;
-        let height = control.height?;
+        let width = match control.width {
+            Some(w) => w,
+            None => {
+                log::warn!("Kitty: RGB decode failed - missing width");
+                return None;
+            }
+        };
+        let height = match control.height {
+            Some(h) => h,
+            None => {
+                log::warn!("Kitty: RGB decode failed - missing height");
+                return None;
+            }
+        };
+
+        log::debug!(
+            "Kitty: Decoding RGB24 - expected {}x{} ({} bytes), got {} bytes",
+            width,
+            height,
+            width * height * 3,
+            data.len()
+        );
 
         if data.len() < width * height * 3 {
+            log::warn!(
+                "Kitty: RGB decode failed - insufficient data (need {}, got {})",
+                width * height * 3,
+                data.len()
+            );
             return None;
         }
 
@@ -744,6 +934,7 @@ impl KittyGrid {
                 rgba.push(255); // A
             }
         }
+        log::debug!("Kitty: RGB24 decoded - dimensions={}x{}", width, height);
 
         Some(KittyImage {
             id: 0, // Will be assigned later
@@ -754,12 +945,38 @@ impl KittyGrid {
     }
 
     fn decode_rgba(&self, data: &[u8], control: &KittyControlData) -> Option<KittyImage> {
-        let width = control.width?;
-        let height = control.height?;
+        let width = match control.width {
+            Some(w) => w,
+            None => {
+                log::warn!("Kitty: RGBA decode failed - missing width");
+                return None;
+            }
+        };
+        let height = match control.height {
+            Some(h) => h,
+            None => {
+                log::warn!("Kitty: RGBA decode failed - missing height");
+                return None;
+            }
+        };
+
+        log::debug!(
+            "Kitty: Decoding RGBA32 - expected {}x{} ({} bytes), got {} bytes",
+            width,
+            height,
+            width * height * 4,
+            data.len()
+        );
 
         if data.len() < width * height * 4 {
+            log::warn!(
+                "Kitty: RGBA decode failed - insufficient data (need {}, got {})",
+                width * height * 4,
+                data.len()
+            );
             return None;
         }
+        log::debug!("Kitty: RGBA32 decoded - dimensions={}x{}", width, height);
 
         Some(KittyImage {
             id: 0,
@@ -778,16 +995,37 @@ impl KittyGrid {
         cursor_x_pixels: usize,
         cursor_y_pixels: usize,
     ) {
+        log::debug!(
+            "Kitty: Creating placement for image_id={}, image_size={}x{}, cursor_pos=({}, {})",
+            image_id,
+            image_width,
+            image_height,
+            cursor_x_pixels,
+            cursor_y_pixels
+        );
+
         let placement_id = control.placement_id.unwrap_or_else(|| {
             let id = self.next_placement_id;
             self.next_placement_id += 1;
             id
         });
+        log::debug!("Kitty: Assigned placement_id={}", placement_id);
 
         let pixel_x = control.display_x.unwrap_or(cursor_x_pixels);
         let pixel_y = control.display_y.unwrap_or(cursor_y_pixels) as isize;
+        log::debug!(
+            "Kitty: Placement position - pixel_x={} (display_x={:?}, cursor={}), pixel_y={} (display_y={:?}, cursor={})",
+            pixel_x,
+            control.display_x,
+            cursor_x_pixels,
+            pixel_y,
+            control.display_y,
+            cursor_y_pixels
+        );
 
         let character_cell_size = *self.character_cell_size.borrow();
+        log::debug!("Kitty: Character cell size: {:?}", character_cell_size);
+
         let display_width = control.display_width.unwrap_or_else(|| {
             control
                 .columns
@@ -801,6 +1039,17 @@ impl KittyGrid {
                 .unwrap_or(image_height)
         });
         let z_index = control.z_index.unwrap_or(0);
+
+        log::debug!(
+            "Kitty: Placement display size - width={} (w={:?}, c={:?}), height={} (h={:?}, r={:?}), z_index={}",
+            display_width,
+            control.display_width,
+            control.columns,
+            display_height,
+            control.display_height,
+            control.rows,
+            z_index
+        );
 
         let placement = KittyPlacement {
             image_id,
@@ -818,6 +1067,10 @@ impl KittyGrid {
         });
 
         self.placements.insert((image_id, placement_id), placement);
+        log::debug!(
+            "Kitty: Placement created - total placements now: {}",
+            self.placements.len()
+        );
     }
 
     fn handle_put(
@@ -826,11 +1079,31 @@ impl KittyGrid {
         cursor_x_pixels: usize,
         cursor_y_pixels: usize,
     ) -> Option<Vec<u8>> {
-        let image_id = cmd.control.image_id?;
+        log::debug!("Kitty: Handling put command for image_id={:?}", cmd.control.image_id);
+        let image_id = match cmd.control.image_id {
+            Some(id) => id,
+            None => {
+                log::warn!("Kitty: Put command missing image_id");
+                return None;
+            }
+        };
         let (width, height) = {
             let store = self.kitty_image_store.borrow();
-            let image = store.get_image(image_id)?;
-            (image.width, image.height)
+            match store.get_image(image_id) {
+                Some(image) => {
+                    log::debug!(
+                        "Kitty: Found image in store - id={}, dimensions={}x{}",
+                        image_id,
+                        image.width,
+                        image.height
+                    );
+                    (image.width, image.height)
+                }
+                None => {
+                    log::warn!("Kitty: Image not found in store - id={}", image_id);
+                    return None;
+                }
+            }
         };
 
         self.create_placement(
@@ -844,8 +1117,10 @@ impl KittyGrid {
 
         if cmd.control.quiet == 0 {
             let response = format!("\x1b_Gi={};OK\x1b\\", image_id);
+            log::debug!("Kitty: Sending put response OK for image_id={}", image_id);
             Some(response.into_bytes())
         } else {
+            log::debug!("Kitty: Put in quiet mode, no response sent");
             None
         }
     }
@@ -853,16 +1128,27 @@ impl KittyGrid {
     fn handle_delete(&mut self, cmd: &KittyCommand) -> Option<Vec<u8>> {
         let delete_type = cmd.control.delete_type.unwrap_or('a');
         let character_cell_size = *self.character_cell_size.borrow();
+        let placements_before = self.placements.len();
+
+        log::debug!(
+            "Kitty: Handling delete command - type='{}', image_id={:?}, placement_id={:?}, placements_before={}",
+            delete_type,
+            cmd.control.image_id,
+            cmd.control.placement_id,
+            placements_before
+        );
 
         // Delete placements based on delete type
         match delete_type {
             'a' | 'A' => {
                 // Delete all placements
+                log::debug!("Kitty: Deleting all placements");
                 self.placements.clear();
             }
             'i' | 'I' => {
                 // Delete by image ID
                 if let Some(id) = cmd.control.image_id {
+                    log::debug!("Kitty: Deleting placements for image_id={}", id);
                     self.placements.retain(|&(img_id, _), _| img_id != id);
                 }
             }
@@ -871,6 +1157,11 @@ impl KittyGrid {
                 if let (Some(img_id), Some(pl_id)) =
                     (cmd.control.image_id, cmd.control.placement_id)
                 {
+                    log::debug!(
+                        "Kitty: Deleting specific placement - image_id={}, placement_id={}",
+                        img_id,
+                        pl_id
+                    );
                     self.placements.remove(&(img_id, pl_id));
                 }
             }
@@ -879,6 +1170,11 @@ impl KittyGrid {
                 if let (Some(cursor_x), Some(cursor_y)) =
                     (cmd.control.display_x, cmd.control.display_y)
                 {
+                    log::debug!(
+                        "Kitty: Deleting placements intersecting cursor at ({}, {})",
+                        cursor_x,
+                        cursor_y
+                    );
                     self.placements.retain(|_, placement| {
                         let intersects = cursor_x >= placement.pixel_x
                             && cursor_x < placement.pixel_x + placement.display_width
@@ -894,6 +1190,12 @@ impl KittyGrid {
                 if let (Some(cell_size), Some(col)) = (character_cell_size, cmd.control.columns) {
                     let col_pixel_start = col * cell_size.width;
                     let col_pixel_end = col_pixel_start + cell_size.width;
+                    log::debug!(
+                        "Kitty: Deleting placements intersecting column {} (pixels {}-{})",
+                        col,
+                        col_pixel_start,
+                        col_pixel_end
+                    );
                     self.placements.retain(|_, placement| {
                         let intersects = placement.pixel_x < col_pixel_end
                             && placement.pixel_x + placement.display_width > col_pixel_start;
@@ -906,6 +1208,12 @@ impl KittyGrid {
                 if let (Some(cell_size), Some(row)) = (character_cell_size, cmd.control.rows) {
                     let row_pixel_start = (row * cell_size.height) as isize;
                     let row_pixel_end = row_pixel_start + cell_size.height as isize;
+                    log::debug!(
+                        "Kitty: Deleting placements intersecting row {} (pixels {}-{})",
+                        row,
+                        row_pixel_start,
+                        row_pixel_end
+                    );
                     self.placements.retain(|_, placement| {
                         let intersects = placement.pixel_y < row_pixel_end
                             && placement.pixel_y + placement.display_height as isize
@@ -917,11 +1225,20 @@ impl KittyGrid {
             'z' | 'Z' => {
                 // Delete placements with specific z-index
                 if let Some(z) = cmd.control.z_index {
+                    log::debug!("Kitty: Deleting placements with z_index={}", z);
                     self.placements.retain(|_, placement| placement.z_index != z);
                 }
             }
-            _ => {}
+            _ => {
+                log::debug!("Kitty: Unknown delete type '{}'", delete_type);
+            }
         }
+
+        log::debug!(
+            "Kitty: Delete complete - placements_after={}, deleted={}",
+            self.placements.len(),
+            placements_before.saturating_sub(self.placements.len())
+        );
 
         // Also delete from image store (for operations that affect stored images)
         self.kitty_image_store
@@ -943,7 +1260,21 @@ impl KittyGrid {
         let mut chunks = Vec::new();
         let mut seen_placements = std::collections::HashSet::new();
 
+        if !self.placements.is_empty() {
+            log::debug!(
+                "Kitty: Getting viewport chunks - placements={}, changed_rects={}, scrollback={}, viewport_offset=({}, {})",
+                self.placements.len(),
+                changed_rects.len(),
+                scrollback_size_in_lines,
+                viewport_x_offset,
+                viewport_y_offset
+            );
+        }
+
         let Some(character_cell_size) = *self.character_cell_size.borrow() else {
+            if !self.placements.is_empty() {
+                log::debug!("Kitty: No character cell size available, skipping viewport calculation");
+            }
             return chunks;
         };
 
@@ -987,6 +1318,18 @@ impl KittyGrid {
                     let cell_y = viewport_y_offset
                         + placement_cell_y.saturating_sub(scrollback_size_in_lines);
 
+                    log::debug!(
+                        "Kitty: Creating viewport chunk - image_id={}, placement_id={}, cell_pos=({}, {}), pixel_pos=({}, {}), display_size={}x{}",
+                        *image_id,
+                        *placement_id,
+                        cell_x,
+                        cell_y,
+                        placement.pixel_x,
+                        placement.pixel_y,
+                        placement.display_width,
+                        placement.display_height
+                    );
+
                     // Always render the entire image - let the terminal handle it
                     // This avoids coordinate mapping issues between source and display dimensions
                     chunks.push(KittyImageChunk {
@@ -1003,6 +1346,10 @@ impl KittyGrid {
                     break; // Move to next placement
                 }
             }
+        }
+
+        if !chunks.is_empty() {
+            log::debug!("Kitty: Returning {} viewport chunks", chunks.len());
         }
 
         chunks

@@ -203,6 +203,14 @@ impl Pane for TerminalPane {
                 }
                 ApcAdvanceResult::Complete(cmd) => {
                     // Process the kitty graphics command
+                    log::debug!(
+                        "Kitty APC: Received complete command - action={:?}, format={:?}, transmission={:?}, image_id={:?}, payload_len={}",
+                        cmd.control.action,
+                        cmd.control.format,
+                        cmd.control.transmission,
+                        cmd.control.image_id,
+                        cmd.payload.len()
+                    );
                     self.grid.handle_kitty_command(cmd);
                 }
                 ApcAdvanceResult::NotApc(buffered) => {
@@ -213,6 +221,7 @@ impl Pane for TerminalPane {
                 }
                 ApcAdvanceResult::Error => {
                     // Parse error, reset parser state
+                    log::warn!("Kitty APC: Parse error, resetting parser state");
                     self.grid.kitty_apc_parser.reset();
                 }
             }
