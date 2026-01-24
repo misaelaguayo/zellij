@@ -75,7 +75,7 @@ impl<'a> PaneContentsAndUi<'a> {
         // and we can clear them from the UI below
         drop(self.pane.drain_fake_cursors());
 
-        if let Some((character_chunks, raw_vte_output, sixel_image_chunks)) =
+        if let Some((character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks)) =
             self.pane.render(None).context(err_context)?
         {
             let clients: Vec<ClientId> = clients.collect();
@@ -88,6 +88,11 @@ impl<'a> PaneContentsAndUi<'a> {
                 .context(err_context)?;
             self.output.add_sixel_image_chunks_to_multiple_clients(
                 sixel_image_chunks,
+                clients.iter().copied(),
+                self.z_index,
+            );
+            self.output.add_kitty_image_chunks_to_multiple_clients(
+                kitty_image_chunks,
                 clients.iter().copied(),
                 self.z_index,
             );
@@ -110,10 +115,10 @@ impl<'a> PaneContentsAndUi<'a> {
     pub fn render_pane_contents_for_client(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to render pane contents for client {client_id}");
 
-        if let Some((character_chunks, raw_vte_output, sixel_image_chunks)) = self
-            .pane
-            .render(Some(client_id))
-            .with_context(err_context)?
+        if let Some((character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks)) =
+            self.pane
+                .render(Some(client_id))
+                .with_context(err_context)?
         {
             self.output
                 .add_character_chunks_to_client(client_id, character_chunks, self.z_index)
@@ -121,6 +126,11 @@ impl<'a> PaneContentsAndUi<'a> {
             self.output.add_sixel_image_chunks_to_client(
                 client_id,
                 sixel_image_chunks,
+                self.z_index,
+            );
+            self.output.add_kitty_image_chunks_to_client(
+                client_id,
+                kitty_image_chunks,
                 self.z_index,
             );
             if let Some(raw_vte_output) = raw_vte_output {

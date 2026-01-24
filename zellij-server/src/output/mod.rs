@@ -4,6 +4,7 @@ use crate::panes::Row;
 
 use crate::panes::Selection;
 use crate::{
+    panes::kitty_graphics::KittyImageStore,
     panes::sixel::SixelImageStore,
     panes::terminal_character::{AnsiCode, CharacterStyles},
     panes::{LinkHandler, PaneId, TerminalCharacter, DEFAULT_STYLES, EMPTY_TERMINAL_CHARACTER},
@@ -141,8 +142,10 @@ fn serialize_chunks_with_newlines(
 fn serialize_chunks(
     character_chunks: Vec<CharacterChunk>,
     sixel_chunks: Option<&Vec<SixelImageChunk>>,
+    kitty_chunks: Option<&Vec<KittyImageChunk>>,
     link_handler: Option<&mut Rc<RefCell<LinkHandler>>>,
     sixel_image_store: Option<&mut SixelImageStore>,
+    kitty_image_store: Option<&mut KittyImageStore>,
     styled_underlines: bool,
     max_size: Option<Size>,
 ) -> Result<String> {
@@ -232,6 +235,46 @@ fn serialize_chunks(
         vte_output.push_str(sixel_vte);
         vte_output.push_str(restore_cursor_position);
     }
+    // Serialize kitty graphics
+    let mut kitty_vte: Option<String> = None;
+    if let Some(kitty_image_store) = kitty_image_store {
+        if let Some(kitty_chunks) = kitty_chunks {
+            for kitty_chunk in kitty_chunks {
+                // Skip kitty chunks that are completely outside the size bounds
+                if let Some(size) = max_size {
+                    if kitty_chunk.cell_y >= size.rows {
+                        continue; // Kitty chunk is below visible area
+                    }
+                    if kitty_chunk.cell_x >= size.cols {
+                        continue; // Kitty chunk starts outside visible area
+                    }
+                }
+
+                let serialized_kitty_image = kitty_image_store.serialize_image(
+                    kitty_chunk.kitty_image_id,
+                    kitty_chunk.kitty_placement_id,
+                    kitty_chunk.kitty_image_pixel_x,
+                    kitty_chunk.kitty_image_pixel_y,
+                    kitty_chunk.kitty_image_pixel_width,
+                    kitty_chunk.kitty_image_pixel_height,
+                );
+                if let Some(serialized_kitty_image) = serialized_kitty_image {
+                    let kitty_vte = kitty_vte.get_or_insert_with(String::new);
+                    vte_goto_instruction(kitty_chunk.cell_x, kitty_chunk.cell_y, kitty_vte)
+                        .with_context(err_context)?;
+                    kitty_vte.push_str(&serialized_kitty_image);
+                }
+            }
+        }
+    }
+    if let Some(ref kitty_vte) = kitty_vte {
+        // Similar to sixel, we append kitty graphics at the end for z-index purposes
+        let save_cursor_position = "\u{1b}[s";
+        let restore_cursor_position = "\u{1b}[u";
+        vte_output.push_str(save_cursor_position);
+        vte_output.push_str(kitty_vte);
+        vte_output.push_str(restore_cursor_position);
+    }
     Ok(vte_output)
 }
 
@@ -292,8 +335,10 @@ pub struct Output {
     post_vte_instructions: HashMap<ClientId, Vec<String>>,
     client_character_chunks: HashMap<ClientId, Vec<CharacterChunk>>,
     sixel_chunks: HashMap<ClientId, Vec<SixelImageChunk>>,
+    kitty_chunks: HashMap<ClientId, Vec<KittyImageChunk>>,
     link_handler: Option<Rc<RefCell<LinkHandler>>>,
     sixel_image_store: Rc<RefCell<SixelImageStore>>,
+    kitty_image_store: Rc<RefCell<KittyImageStore>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     floating_panes_stack: Option<FloatingPanesStack>,
     styled_underlines: bool,
@@ -304,11 +349,13 @@ pub struct Output {
 impl Output {
     pub fn new(
         sixel_image_store: Rc<RefCell<SixelImageStore>>,
+        kitty_image_store: Rc<RefCell<KittyImageStore>>,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         styled_underlines: bool,
     ) -> Self {
         Output {
             sixel_image_store,
+            kitty_image_store,
             character_cell_size,
             styled_underlines,
             ..Default::default()
@@ -449,6 +496,48 @@ impl Output {
             }
         }
     }
+    pub fn add_kitty_image_chunks_to_client(
+        &mut self,
+        client_id: ClientId,
+        kitty_image_chunks: Vec<KittyImageChunk>,
+        z_index: Option<usize>,
+    ) {
+        if let Some(character_cell_size) = *self.character_cell_size.borrow() {
+            let mut kitty_chunks = if let Some(floating_panes_stack) = &self.floating_panes_stack {
+                floating_panes_stack.visible_kitty_image_chunks(
+                    kitty_image_chunks,
+                    z_index,
+                    &character_cell_size,
+                )
+            } else {
+                kitty_image_chunks
+            };
+            let entry = self.kitty_chunks.entry(client_id).or_insert_with(Vec::new);
+            entry.append(&mut kitty_chunks);
+        }
+    }
+    pub fn add_kitty_image_chunks_to_multiple_clients(
+        &mut self,
+        kitty_image_chunks: Vec<KittyImageChunk>,
+        client_ids: impl Iterator<Item = ClientId>,
+        z_index: Option<usize>,
+    ) {
+        if let Some(character_cell_size) = *self.character_cell_size.borrow() {
+            let kitty_chunks = if let Some(floating_panes_stack) = &self.floating_panes_stack {
+                floating_panes_stack.visible_kitty_image_chunks(
+                    kitty_image_chunks,
+                    z_index,
+                    &character_cell_size,
+                )
+            } else {
+                kitty_image_chunks
+            };
+            for client_id in client_ids {
+                let entry = self.kitty_chunks.entry(client_id).or_insert_with(Vec::new);
+                entry.append(&mut kitty_chunks.clone());
+            }
+        }
+    }
     pub fn serialize(&mut self) -> Result<HashMap<ClientId, String>> {
         let err_context = || "failed to serialize output to clients".to_string();
 
@@ -471,8 +560,10 @@ impl Output {
                 &serialize_chunks(
                     client_character_chunks,
                     self.sixel_chunks.get(&client_id),
+                    self.kitty_chunks.get(&client_id),
                     self.link_handler.as_mut(),
                     Some(&mut self.sixel_image_store.borrow_mut()),
+                    Some(&mut self.kitty_image_store.borrow_mut()),
                     self.styled_underlines,
                     None, // No size constraints for regular rendering
                 )
@@ -538,8 +629,10 @@ impl Output {
                 &serialize_chunks(
                     client_character_chunks,
                     self.sixel_chunks.get(&client_id),
+                    self.kitty_chunks.get(&client_id),
                     self.link_handler.as_mut(),
                     Some(&mut self.sixel_image_store.borrow_mut()),
+                    Some(&mut self.kitty_image_store.borrow_mut()),
                     self.styled_underlines,
                     max_size,
                 )
@@ -896,6 +989,185 @@ impl FloatingPanesStack {
         }
         uncovered_chunks
     }
+    pub fn visible_kitty_image_chunks(
+        &self,
+        mut kitty_image_chunks: Vec<KittyImageChunk>,
+        z_index: Option<usize>,
+        character_cell_size: &SizeInPixels,
+    ) -> Vec<KittyImageChunk> {
+        let z_index = z_index.unwrap_or(0);
+        let mut chunks_to_check: Vec<KittyImageChunk> = kitty_image_chunks.drain(..).collect();
+        let panes_to_check = self.layers.iter().skip(z_index);
+        for pane_geom in panes_to_check {
+            let chunks_to_check_against_this_pane: Vec<KittyImageChunk> =
+                chunks_to_check.drain(..).collect();
+            for k_chunk in chunks_to_check_against_this_pane {
+                let mut uncovered_chunks =
+                    self.remove_covered_kitty_parts(pane_geom, &k_chunk, character_cell_size);
+                chunks_to_check.append(&mut uncovered_chunks);
+            }
+        }
+        chunks_to_check
+    }
+    fn remove_covered_kitty_parts(
+        &self,
+        pane_geom: &PaneGeom,
+        k_chunk: &KittyImageChunk,
+        character_cell_size: &SizeInPixels,
+    ) -> Vec<KittyImageChunk> {
+        // round these up to the nearest cell edge
+        let rounded_kitty_image_pixel_height =
+            if k_chunk.kitty_image_pixel_height % character_cell_size.height > 0 {
+                let modulus = k_chunk.kitty_image_pixel_height % character_cell_size.height;
+                k_chunk.kitty_image_pixel_height + (character_cell_size.height - modulus)
+            } else {
+                k_chunk.kitty_image_pixel_height
+            };
+        let rounded_kitty_image_pixel_width =
+            if k_chunk.kitty_image_pixel_width % character_cell_size.width > 0 {
+                let modulus = k_chunk.kitty_image_pixel_width % character_cell_size.width;
+                k_chunk.kitty_image_pixel_width + (character_cell_size.width - modulus)
+            } else {
+                k_chunk.kitty_image_pixel_width
+            };
+
+        let pane_top_edge = pane_geom.y * character_cell_size.height;
+        let pane_left_edge = pane_geom.x * character_cell_size.width;
+        let pane_bottom_edge = (pane_geom.y + pane_geom.rows.as_usize().saturating_sub(1))
+            * character_cell_size.height;
+        let pane_right_edge =
+            (pane_geom.x + pane_geom.cols.as_usize().saturating_sub(1)) * character_cell_size.width;
+        let k_chunk_top_edge = k_chunk.cell_y * character_cell_size.height;
+        let k_chunk_bottom_edge = k_chunk_top_edge + rounded_kitty_image_pixel_height;
+        let k_chunk_left_edge = k_chunk.cell_x * character_cell_size.width;
+        let k_chunk_right_edge = k_chunk_left_edge + rounded_kitty_image_pixel_width;
+
+        let mut uncovered_chunks = vec![];
+        let pane_covers_chunk_completely = pane_top_edge <= k_chunk_top_edge
+            && pane_bottom_edge >= k_chunk_bottom_edge
+            && pane_left_edge <= k_chunk_left_edge
+            && pane_right_edge >= k_chunk_right_edge;
+        let pane_intersects_with_chunk_vertically = (pane_left_edge >= k_chunk_left_edge
+            && pane_left_edge <= k_chunk_right_edge)
+            || (pane_right_edge >= k_chunk_left_edge && pane_right_edge <= k_chunk_right_edge)
+            || (pane_left_edge <= k_chunk_left_edge && pane_right_edge >= k_chunk_right_edge);
+        let pane_intersects_with_chunk_horizontally = (pane_top_edge >= k_chunk_top_edge
+            && pane_top_edge <= k_chunk_bottom_edge)
+            || (pane_bottom_edge >= k_chunk_top_edge && pane_bottom_edge <= k_chunk_bottom_edge)
+            || (pane_top_edge <= k_chunk_top_edge && pane_bottom_edge >= k_chunk_bottom_edge);
+        if pane_covers_chunk_completely {
+            return uncovered_chunks;
+        }
+        if pane_top_edge >= k_chunk_top_edge
+            && pane_top_edge <= k_chunk_bottom_edge
+            && pane_intersects_with_chunk_vertically
+        {
+            // pane covers image bottom
+            let top_image_chunk = KittyImageChunk {
+                cell_x: k_chunk.cell_x,
+                cell_y: k_chunk.cell_y,
+                kitty_image_pixel_x: k_chunk.kitty_image_pixel_x,
+                kitty_image_pixel_y: k_chunk.kitty_image_pixel_y,
+                kitty_image_pixel_width: rounded_kitty_image_pixel_width,
+                kitty_image_pixel_height: pane_top_edge - k_chunk_top_edge,
+                kitty_image_id: k_chunk.kitty_image_id,
+                kitty_placement_id: k_chunk.kitty_placement_id,
+            };
+            uncovered_chunks.push(top_image_chunk);
+        }
+        if pane_bottom_edge <= k_chunk_bottom_edge
+            && pane_bottom_edge >= k_chunk_top_edge
+            && pane_intersects_with_chunk_vertically
+        {
+            // pane covers image top
+            let bottom_image_chunk = KittyImageChunk {
+                cell_x: k_chunk.cell_x,
+                cell_y: (pane_bottom_edge / character_cell_size.height) + 1,
+                kitty_image_pixel_x: k_chunk.kitty_image_pixel_x,
+                kitty_image_pixel_y: k_chunk.kitty_image_pixel_y
+                    + (pane_bottom_edge - k_chunk_top_edge)
+                    + character_cell_size.height,
+                kitty_image_pixel_width: rounded_kitty_image_pixel_width,
+                kitty_image_pixel_height: (rounded_kitty_image_pixel_height
+                    - (pane_bottom_edge - k_chunk_top_edge))
+                    .saturating_sub(character_cell_size.height),
+                kitty_image_id: k_chunk.kitty_image_id,
+                kitty_placement_id: k_chunk.kitty_placement_id,
+            };
+            uncovered_chunks.push(bottom_image_chunk);
+        }
+        if pane_left_edge >= k_chunk_left_edge
+            && pane_left_edge <= k_chunk_right_edge
+            && pane_intersects_with_chunk_horizontally
+        {
+            // pane covers image right
+            let kitty_image_pixel_y = if k_chunk_top_edge < pane_top_edge {
+                k_chunk.kitty_image_pixel_y + (pane_top_edge - k_chunk_top_edge)
+            } else {
+                k_chunk.kitty_image_pixel_y
+            };
+            let max_image_height = if k_chunk_top_edge < pane_top_edge {
+                rounded_kitty_image_pixel_height.saturating_sub(pane_top_edge - k_chunk_top_edge)
+            } else {
+                rounded_kitty_image_pixel_height
+            };
+            let left_image_chunk = KittyImageChunk {
+                cell_x: k_chunk.cell_x,
+                cell_y: std::cmp::max(k_chunk.cell_y, pane_top_edge / character_cell_size.height),
+                kitty_image_pixel_x: k_chunk.kitty_image_pixel_x,
+                kitty_image_pixel_y,
+                kitty_image_pixel_width: rounded_kitty_image_pixel_width
+                    .saturating_sub(k_chunk_right_edge.saturating_sub(pane_left_edge)),
+                kitty_image_pixel_height: std::cmp::min(
+                    pane_bottom_edge - pane_top_edge + character_cell_size.height,
+                    max_image_height,
+                ),
+                kitty_image_id: k_chunk.kitty_image_id,
+                kitty_placement_id: k_chunk.kitty_placement_id,
+            };
+            uncovered_chunks.push(left_image_chunk);
+        }
+        if pane_right_edge <= k_chunk_right_edge
+            && pane_right_edge >= k_chunk_left_edge
+            && pane_intersects_with_chunk_horizontally
+        {
+            // pane covers image left
+            let kitty_image_pixel_y = if k_chunk_top_edge < pane_top_edge {
+                k_chunk.kitty_image_pixel_y + (pane_top_edge - k_chunk_top_edge)
+            } else {
+                k_chunk.kitty_image_pixel_y
+            };
+            let max_image_height = if k_chunk_top_edge < pane_top_edge {
+                rounded_kitty_image_pixel_height.saturating_sub(pane_top_edge - k_chunk_top_edge)
+            } else {
+                rounded_kitty_image_pixel_height
+            };
+            let kitty_image_pixel_x = k_chunk.kitty_image_pixel_x
+                + (pane_right_edge - k_chunk_left_edge)
+                + character_cell_size.width;
+            let right_image_chunk = KittyImageChunk {
+                cell_x: (pane_right_edge / character_cell_size.width) + 1,
+                cell_y: std::cmp::max(k_chunk.cell_y, pane_top_edge / character_cell_size.height),
+                kitty_image_pixel_x,
+                kitty_image_pixel_y,
+                kitty_image_pixel_width: (rounded_kitty_image_pixel_width
+                    .saturating_sub(pane_right_edge - k_chunk_left_edge))
+                .saturating_sub(character_cell_size.width),
+                kitty_image_pixel_height: std::cmp::min(
+                    pane_bottom_edge - pane_top_edge + character_cell_size.height,
+                    max_image_height,
+                ),
+                kitty_image_id: k_chunk.kitty_image_id,
+                kitty_placement_id: k_chunk.kitty_placement_id,
+            };
+            uncovered_chunks.push(right_image_chunk);
+        }
+        if uncovered_chunks.is_empty() {
+            // the pane doesn't cover the chunk at all, so we return it as is
+            uncovered_chunks.push(*k_chunk);
+        }
+        uncovered_chunks
+    }
     pub fn cursor_is_visible(&self, cursor_x: usize, cursor_y: usize) -> bool {
         let z_index = 0; // TODO: receive z_index
         let panes_to_check = self.layers.iter().skip(z_index);
@@ -934,6 +1206,19 @@ pub struct SixelImageChunk {
     pub sixel_image_pixel_width: usize,
     pub sixel_image_pixel_height: usize,
     pub sixel_image_id: usize,
+}
+
+/// Kitty graphics image chunk for rendering
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KittyImageChunk {
+    pub cell_x: usize,
+    pub cell_y: usize,
+    pub kitty_image_pixel_x: usize,
+    pub kitty_image_pixel_y: usize,
+    pub kitty_image_pixel_width: usize,
+    pub kitty_image_pixel_height: usize,
+    pub kitty_image_id: u32,
+    pub kitty_placement_id: u32,
 }
 
 impl CharacterChunk {
