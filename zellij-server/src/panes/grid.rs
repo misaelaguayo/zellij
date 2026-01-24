@@ -357,6 +357,7 @@ pub struct Grid {
     pub focus_event_tracking: bool,
     pub search_results: SearchResult,
     pub pending_clipboard_update: Option<String>,
+    pending_kitty_delete_command: Option<String>,
     ui_component_bytes: Option<Vec<u8>>,
     style: Style,
     debug: bool,
@@ -549,6 +550,7 @@ impl Grid {
             kitty_grid,
             kitty_apc_parser: KittyApcParser::default(),
             pending_clipboard_update: None,
+            pending_kitty_delete_command: None,
             ui_component_bytes: None,
             style,
             debug,
@@ -1140,6 +1142,16 @@ impl Grid {
             return Ok(None);
         }
         let mut raw_vte_output = String::new();
+
+        // Include any pending kitty delete commands (from alternate screen exit, etc.)
+        if let Some(delete_cmd) = self.pending_kitty_delete_command.take() {
+            raw_vte_output.push_str(&delete_cmd);
+        }
+
+        // Include any pending delete commands from kitty_grid (from app-initiated deletes)
+        if let Some(delete_cmd) = self.kitty_grid.drain_pending_delete_commands() {
+            raw_vte_output.push_str(&delete_cmd);
+        }
 
         let (mut character_chunks, sixel_image_chunks, kitty_image_chunks) = self.read_changes(content_x, content_y);
         for character_chunk in character_chunks.iter_mut() {

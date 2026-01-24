@@ -426,7 +426,6 @@ impl KittyImageStore {
         pixel_height: usize,
     ) -> Option<String> {
         log::debug!(
-            "Kitty: Serializing image - id={}, offset=({}, {}), size={}x{}",
             "Kitty: Serializing image - id={}, placement_id={}, offset=({}, {}), size={}x{}",
             image_id,
             placement_id,
@@ -536,9 +535,7 @@ fn format_kitty_output(
         if i == 0 {
             // Include placement_id (p=) so parent terminal can replace existing placements
             output.push_str(&format!(
-                "\x1b_Ga=T,f=32,s={},v={},w={},h={},i={},m={};{}\x1b\\",
                 "\x1b_Ga=T,f=32,s={},v={},w={},h={},i={},p={},m={};{}\x1b\\",
-                source_width, source_height, display_width, display_height, image_id, m, chunk_str
                 source_width, source_height, display_width, display_height, image_id, placement_id, m, chunk_str
             ));
         } else {
@@ -567,6 +564,8 @@ pub struct KittyGrid {
     pub kitty_image_store: Rc<RefCell<KittyImageStore>>,
     /// Placement IDs to remove
     placements_to_reap: Vec<(u32, u32)>,
+    /// Pending delete commands to forward to the parent terminal
+    pending_delete_commands: Vec<String>,
 }
 
 impl KittyGrid {
@@ -1242,16 +1241,56 @@ impl KittyGrid {
             }
         }
 
+        let deleted_count = placements_before.saturating_sub(self.placements.len());
         log::debug!(
             "Kitty: Delete complete - placements_after={}, deleted={}",
             self.placements.len(),
             placements_before.saturating_sub(self.placements.len())
+            deleted_count
         );
 
         // Also delete from image store (for operations that affect stored images)
         self.kitty_image_store
             .borrow_mut()
             .delete(delete_type, cmd.control.image_id);
+
+        // Forward the delete command to the parent terminal if we actually deleted something
+        if deleted_count > 0 || delete_type == 'a' || delete_type == 'A' {
+            // Build the delete command to forward to the parent terminal
+            let delete_cmd = match delete_type {
+                'a' | 'A' => {
+                    // Delete all - use uppercase to ensure all placements are deleted
+                    "\x1b_Ga=d,d=A\x1b\\".to_string()
+                }
+                'i' | 'I' => {
+                    // Delete by image ID
+                    if let Some(id) = cmd.control.image_id {
+                        format!("\x1b_Ga=d,d=I,i={}\x1b\\", id)
+                    } else {
+                        return None;
+                    }
+                }
+                'p' | 'P' => {
+                    // Delete by placement ID
+                    if let (Some(img_id), Some(pl_id)) =
+                        (cmd.control.image_id, cmd.control.placement_id)
+                    {
+                        format!("\x1b_Ga=d,d=P,i={},p={}\x1b\\", img_id, pl_id)
+                    } else {
+                        return None;
+                    }
+                }
+                // For cursor/column/row/z-index deletes, use delete all since the parent
+                // terminal may have different coordinates
+                'c' | 'C' | 'x' | 'X' | 'y' | 'Y' | 'z' | 'Z' => {
+                    "\x1b_Ga=d,d=A\x1b\\".to_string()
+                }
+                _ => return None,
+            };
+
+            log::debug!("Kitty: Queueing delete command for parent terminal: {:?}", delete_cmd);
+            self.pending_delete_commands.push(delete_cmd);
+        }
 
         None
     }
@@ -1450,5 +1489,16 @@ impl KittyGrid {
                 )
             })
             .collect()
+    }
+
+    /// Drain any pending delete commands that need to be forwarded to the parent terminal
+    pub fn drain_pending_delete_commands(&mut self) -> Option<String> {
+        if self.pending_delete_commands.is_empty() {
+            return None;
+        }
+        let commands = self.pending_delete_commands.join("");
+        self.pending_delete_commands.clear();
+        log::debug!("Kitty: Draining {} pending delete commands", commands.len());
+        Some(commands)
     }
 }
