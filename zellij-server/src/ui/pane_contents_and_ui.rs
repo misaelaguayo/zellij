@@ -115,10 +115,10 @@ impl<'a> PaneContentsAndUi<'a> {
     pub fn render_pane_contents_for_client(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to render pane contents for client {client_id}");
 
-        if let Some((character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks)) = self
-            .pane
-            .render(Some(client_id))
-            .with_context(err_context)?
+        if let Some((character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks)) =
+            self.pane
+                .render(Some(client_id))
+                .with_context(err_context)?
         {
             self.output
                 .add_character_chunks_to_client(client_id, character_chunks, self.z_index)

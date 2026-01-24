@@ -37,8 +37,8 @@ use crate::{
     os_input_output::ServerOsApi,
     output::{CharacterChunk, KittyImageChunk, Output, SixelImageChunk},
     panes::floating_panes::floating_pane_grid::half_size_middle_geom,
-    panes::sixel::SixelImageStore,
     panes::kitty_graphics::KittyImageStore,
+    panes::sixel::SixelImageStore,
     panes::{FloatingPanes, TiledPanes},
     panes::{LinkHandler, PaneId, PluginPane, TerminalPane},
     plugins::PluginInstruction,
@@ -320,7 +320,14 @@ pub trait Pane {
     fn render(
         &mut self,
         client_id: Option<ClientId>,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>, Vec<KittyImageChunk>)>>; // TODO: better
+    ) -> Result<
+        Option<(
+            Vec<CharacterChunk>,
+            Option<String>,
+            Vec<SixelImageChunk>,
+            Vec<KittyImageChunk>,
+        )>,
+    >; // TODO: better
     fn render_frame(
         &mut self,
         client_id: ClientId,

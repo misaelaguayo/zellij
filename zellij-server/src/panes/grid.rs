@@ -1076,7 +1076,11 @@ impl Grid {
         &mut self,
         x_offset: usize,
         y_offset: usize,
-    ) -> (Vec<CharacterChunk>, Vec<SixelImageChunk>, Vec<KittyImageChunk>) {
+    ) -> (
+        Vec<CharacterChunk>,
+        Vec<SixelImageChunk>,
+        Vec<KittyImageChunk>,
+    ) {
         let changed_character_chunks = self.output_buffer.changed_chunks_in_viewport(
             &self.viewport,
             self.width,
@@ -1106,7 +1110,11 @@ impl Grid {
         }
         self.output_buffer.clear();
 
-        (changed_character_chunks, changed_sixel_image_chunks, changed_kitty_image_chunks)
+        (
+            changed_character_chunks,
+            changed_sixel_image_chunks,
+            changed_kitty_image_chunks,
+        )
     }
     pub fn serialize(&self, scrollback_lines_to_serialize: Option<usize>) -> Option<String> {
         match scrollback_lines_to_serialize {
@@ -1137,7 +1145,14 @@ impl Grid {
         content_x: usize,
         content_y: usize,
         style: &Style,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>, Vec<KittyImageChunk>)>> {
+    ) -> Result<
+        Option<(
+            Vec<CharacterChunk>,
+            Option<String>,
+            Vec<SixelImageChunk>,
+            Vec<KittyImageChunk>,
+        )>,
+    > {
         if self.lock_renders {
             return Ok(None);
         }
@@ -1153,7 +1168,8 @@ impl Grid {
             raw_vte_output.push_str(&delete_cmd);
         }
 
-        let (mut character_chunks, sixel_image_chunks, kitty_image_chunks) = self.read_changes(content_x, content_y);
+        let (mut character_chunks, sixel_image_chunks, kitty_image_chunks) =
+            self.read_changes(content_x, content_y);
         for character_chunk in character_chunks.iter_mut() {
             character_chunk.add_changed_colors(self.changed_colors);
             if self

@@ -396,7 +396,14 @@ impl Pane for PluginPane {
     fn render(
         &mut self,
         client_id: Option<ClientId>,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>, Vec<KittyImageChunk>)>> {
+    ) -> Result<
+        Option<(
+            Vec<CharacterChunk>,
+            Option<String>,
+            Vec<SixelImageChunk>,
+            Vec<KittyImageChunk>,
+        )>,
+    > {
         if client_id.is_none() {
             return Ok(None);
         }

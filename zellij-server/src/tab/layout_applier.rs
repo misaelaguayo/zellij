@@ -5,8 +5,8 @@ use crate::tab::{get_next_terminal_position, HoldForCommand, Pane};
 
 use crate::{
     os_input_output::ServerOsApi,
-    panes::sixel::SixelImageStore,
     panes::kitty_graphics::KittyImageStore,
+    panes::sixel::SixelImageStore,
     panes::{FloatingPanes, TiledPanes},
     panes::{LinkHandler, PaneId, PluginPane, TerminalPane},
     plugins::PluginInstruction,

@@ -27,11 +27,17 @@ fn filter_kitty_graphics_responses(buf: &[u8]) -> Vec<u8> {
                     // Found the end - check if this looks like a response (contains ;OK or ;E)
                     let sequence = &buf[start..i + 2];
                     let seq_str = String::from_utf8_lossy(sequence);
-                    if seq_str.contains(";OK") || seq_str.contains(";ENOENT") ||
-                       seq_str.contains(";EINVAL") || seq_str.contains(";EBADF") ||
-                       (seq_str.contains(";E") && sequence.len() < 50) {
+                    if seq_str.contains(";OK")
+                        || seq_str.contains(";ENOENT")
+                        || seq_str.contains(";EINVAL")
+                        || seq_str.contains(";EBADF")
+                        || (seq_str.contains(";E") && sequence.len() < 50)
+                    {
                         // This is a kitty graphics response, skip it entirely
-                        log::debug!("Filtering kitty graphics response from stdin: {:?}", seq_str);
+                        log::debug!(
+                            "Filtering kitty graphics response from stdin: {:?}",
+                            seq_str
+                        );
                         i += 2; // Skip ESC \
                         found_end = true;
                         break;
@@ -119,9 +125,6 @@ pub(crate) fn stdin_loop(
             Ok(buf) => {
                 // Filter out kitty graphics responses from parent terminal before processing
                 let buf = filter_kitty_graphics_responses(&buf);
-                if buf.is_empty() {
-                    continue; // All bytes were filtered out
-                }
 
                 {
                     // here we check if we need to parse specialized ANSI instructions sent over STDIN
@@ -131,7 +134,7 @@ pub(crate) fn stdin_loop(
                     // receive on STDIN during that timeout is unceremoniously dropped
                     let mut stdin_ansi_parser = stdin_ansi_parser.lock().unwrap();
                     if stdin_ansi_parser.should_parse() {
-                        let events = stdin_ansi_parser.parse(buf.clone());
+                        let events = stdin_ansi_parser.parse(buf);
                         if !events.is_empty() {
                             ansi_stdin_events.append(&mut events.clone());
                             let _ = send_input_instructions

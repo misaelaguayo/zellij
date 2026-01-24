@@ -4,8 +4,8 @@ use crate::panes::Row;
 
 use crate::panes::Selection;
 use crate::{
-    panes::sixel::SixelImageStore,
     panes::kitty_graphics::KittyImageStore,
+    panes::sixel::SixelImageStore,
     panes::terminal_character::{AnsiCode, CharacterStyles},
     panes::{LinkHandler, PaneId, TerminalCharacter, DEFAULT_STYLES, EMPTY_TERMINAL_CHARACTER},
     ClientId,

@@ -200,7 +200,7 @@ impl Pane for TerminalPane {
             match self.grid.kitty_apc_parser.advance(byte) {
                 ApcAdvanceResult::Continue => {
                     // APC parser consumed the byte, don't send to VTE
-                }
+                },
                 ApcAdvanceResult::Complete(cmd) => {
                     // Process the kitty graphics command
                     log::debug!(
@@ -212,18 +212,18 @@ impl Pane for TerminalPane {
                         cmd.payload.len()
                     );
                     self.grid.handle_kitty_command(cmd);
-                }
+                },
                 ApcAdvanceResult::NotApc(buffered) => {
                     // Not an APC sequence, forward buffered bytes to VTE
                     for b in buffered {
                         self.vte_parser.advance(&mut self.grid, b);
                     }
-                }
+                },
                 ApcAdvanceResult::Error => {
                     // Parse error, reset parser state
                     log::warn!("Kitty APC: Parse error, resetting parser state");
                     self.grid.kitty_apc_parser.reset();
-                }
+                },
             }
         }
     }
@@ -340,7 +340,14 @@ impl Pane for TerminalPane {
     fn render(
         &mut self,
         _client_id: Option<ClientId>,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>, Vec<SixelImageChunk>, Vec<KittyImageChunk>)>> {
+    ) -> Result<
+        Option<(
+            Vec<CharacterChunk>,
+            Option<String>,
+            Vec<SixelImageChunk>,
+            Vec<KittyImageChunk>,
+        )>,
+    > {
         if self.should_render() {
             let content_x = self.get_content_x();
             let content_y = self.get_content_y();
