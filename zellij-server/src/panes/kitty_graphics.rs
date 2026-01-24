@@ -1245,7 +1245,6 @@ impl KittyGrid {
         log::debug!(
             "Kitty: Delete complete - placements_after={}, deleted={}",
             self.placements.len(),
-            placements_before.saturating_sub(self.placements.len())
             deleted_count
         );
 
