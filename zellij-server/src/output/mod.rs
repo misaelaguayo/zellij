@@ -252,6 +252,7 @@ fn serialize_chunks(
 
                 let serialized_kitty_image = kitty_image_store.serialize_image(
                     kitty_chunk.kitty_image_id,
+                    kitty_chunk.kitty_placement_id,
                     kitty_chunk.kitty_image_pixel_x,
                     kitty_chunk.kitty_image_pixel_y,
                     kitty_chunk.kitty_image_pixel_width,

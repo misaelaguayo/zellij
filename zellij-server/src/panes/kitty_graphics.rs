@@ -419,6 +419,7 @@ impl KittyImageStore {
     pub fn serialize_image(
         &mut self,
         image_id: u32,
+        placement_id: u32,
         pixel_x: usize,
         pixel_y: usize,
         pixel_width: usize,
@@ -426,7 +427,9 @@ impl KittyImageStore {
     ) -> Option<String> {
         log::debug!(
             "Kitty: Serializing image - id={}, offset=({}, {}), size={}x{}",
+            "Kitty: Serializing image - id={}, placement_id={}, offset=({}, {}), size={}x{}",
             image_id,
+            placement_id,
             pixel_x,
             pixel_y,
             pixel_width,
@@ -451,6 +454,7 @@ impl KittyImageStore {
             // Return cached serialization
             return Some(format_kitty_output(
                 image_id,
+                placement_id,
                 actual_source_width,
                 actual_source_height,
                 pixel_width,
@@ -468,6 +472,7 @@ impl KittyImageStore {
 
         Some(format_kitty_output(
             image_id,
+            placement_id,
             actual_source_width,
             actual_source_height,
             pixel_width,
@@ -512,6 +517,7 @@ fn extract_image_region(
 /// Format RGBA data as a kitty graphics output command
 fn format_kitty_output(
     image_id: u32,
+    placement_id: u32,
     source_width: usize,
     source_height: usize,
     display_width: usize,
@@ -528,9 +534,12 @@ fn format_kitty_output(
         let m = if i == total_chunks - 1 { 0 } else { 1 };
 
         if i == 0 {
+            // Include placement_id (p=) so parent terminal can replace existing placements
             output.push_str(&format!(
                 "\x1b_Ga=T,f=32,s={},v={},w={},h={},i={},m={};{}\x1b\\",
+                "\x1b_Ga=T,f=32,s={},v={},w={},h={},i={},p={},m={};{}\x1b\\",
                 source_width, source_height, display_width, display_height, image_id, m, chunk_str
+                source_width, source_height, display_width, display_height, image_id, placement_id, m, chunk_str
             ));
         } else {
             output.push_str(&format!("\x1b_Gm={};{}\x1b\\", m, chunk_str));
